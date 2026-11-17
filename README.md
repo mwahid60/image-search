@@ -224,7 +224,7 @@ Semua variabel ada di `.env.example`. Ringkasan:
 | `LLAMA_THREADS` | `4` | llama.cpp |
 | `OPENVERSE_BASE_URL` | `https://api.openverse.org` | fetcher |
 | `OPENVERSE_CLIENT_ID`, `OPENVERSE_CLIENT_SECRET` | kosong | fetcher (opsional) |
-| `MILVUS_URI` | `/data/milvus.db` | backend |
+| `MILVUS_DB_PATH` | `/data/milvus.db` | backend (Milvus Lite) |
 | `MILVUS_COLLECTION` | `image_embeddings` | backend |
 | `LLAMA_BASE_URL` | `http://llama-embeddings:8080` | backend |
 | `QUERY_PROMPT_PREFIX` | `task: search result \| query:` | backend |

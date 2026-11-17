@@ -180,7 +180,7 @@ services:
       LLAMA_TIMEOUT_SECONDS: "${LLAMA_TIMEOUT_SECONDS:-180}"
       EMBEDDING_DIMENSION: "${EMBEDDING_DIMENSION:-768}"
       QUERY_PROMPT_PREFIX: "${QUERY_PROMPT_PREFIX:-task: search result | query:}"
-      MILVUS_URI: "${MILVUS_URI:-/data/milvus.db}"
+      MILVUS_DB_PATH: "${MILVUS_DB_PATH:-/data/milvus.db}"
       MILVUS_COLLECTION: "${MILVUS_COLLECTION:-image_embeddings}"
       SEARCH_DEFAULT_TOP_K: "${SEARCH_DEFAULT_TOP_K:-12}"
       SEARCH_MAX_TOP_K: "${SEARCH_MAX_TOP_K:-50}"
