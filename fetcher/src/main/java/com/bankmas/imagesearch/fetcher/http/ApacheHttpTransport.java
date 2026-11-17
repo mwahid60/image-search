@@ -58,6 +58,20 @@ import org.apache.hc.core5.util.Timeout;
  */
 public final class ApacheHttpTransport implements HttpTransport, AutoCloseable {
 
+    /** Context attribute holding the URI of the first request in a redirect chain. */
+    static final String ORIGINAL_URI_ATTRIBUTE = "bankmas.fetcher.redirect.original-uri";
+
+    private static final String CREDENTIALS_REVOKED_ATTRIBUTE =
+            "bankmas.fetcher.redirect.credentials-revoked";
+
+    /**
+     * Headers that must never be replayed to a different origin. Cookies are
+     * included even though cookie management is disabled, so a caller-supplied
+     * Cookie header is handled the same way as a bearer token.
+     */
+    private static final List<String> CREDENTIAL_HEADERS =
+            List.of("Authorization", "Proxy-Authorization", "Cookie", "Cookie2");
+
     private final CloseableHttpClient client;
     private final int maxRedirects;
 
@@ -76,6 +90,8 @@ public final class ApacheHttpTransport implements HttpTransport, AutoCloseable {
                 .setRedirectStrategy(new SchemeGuardedRedirectStrategy())
                 .disableAutomaticRetries()
                 .disableCookieManagement()
+                .addRequestInterceptorLast((request, entityDetails, context) ->
+                        stripCredentialsOnCrossOriginRedirect(request, context))
                 .evictExpiredConnections()
                 .evictIdleConnections(TimeValue.ofSeconds(30))
                 .build();
@@ -104,6 +120,9 @@ public final class ApacheHttpTransport implements HttpTransport, AutoCloseable {
                 .build());
 
         HttpClientContext context = HttpClientContext.create();
+        // Remember where the chain started so every redirect request can be compared
+        // against it by the request interceptor before credentials are transmitted.
+        context.setAttribute(ORIGINAL_URI_ATTRIBUTE, spec.uri());
         try {
             // The response handler form is the non-deprecated API; the client closes
             // the response entity as soon as the handler returns.
@@ -203,6 +222,59 @@ public final class ApacheHttpTransport implements HttpTransport, AutoCloseable {
 
     private static HttpRequestException tooLarge() {
         return HttpRequestException.of("too_large", "response body exceeds configured limit", false, null);
+    }
+
+    /**
+     * Runs for every request, including each redirect hop, right before it is sent.
+     * When the target origin differs from the first request (scheme, host, or
+     * effective port), credential headers are removed. Once credentials are
+     * revoked for a chain they stay revoked, so a chain that returns to the
+     * original origin cannot re-add them from the copied original request.
+     * HTTPS-to-HTTP downgrades are cross-origin by definition and are stripped.
+     */
+    static void stripCredentialsOnCrossOriginRedirect(HttpRequest request, HttpContext context) {
+        URI current;
+        try {
+            current = request.getUri();
+        } catch (URISyntaxException e) {
+            current = null;
+        }
+        URI original = context.getAttribute(ORIGINAL_URI_ATTRIBUTE) instanceof URI uri ? uri : null;
+        boolean credentialsRevoked =
+                Boolean.TRUE.equals(context.getAttribute(CREDENTIALS_REVOKED_ATTRIBUTE));
+        if (!credentialsRevoked && original != null && current != null && sameOrigin(original, current)) {
+            return;
+        }
+        for (String header : CREDENTIAL_HEADERS) {
+            request.removeHeaders(header);
+        }
+        context.setAttribute(CREDENTIALS_REVOKED_ATTRIBUTE, Boolean.TRUE);
+    }
+
+    static boolean sameOrigin(URI first, URI second) {
+        String scheme = first.getScheme();
+        String otherScheme = second.getScheme();
+        if (scheme == null || otherScheme == null || !scheme.equalsIgnoreCase(otherScheme)) {
+            return false;
+        }
+        String host = first.getHost();
+        String otherHost = second.getHost();
+        if (host == null || otherHost == null || !host.equalsIgnoreCase(otherHost)) {
+            return false;
+        }
+        return effectivePort(first) == effectivePort(second);
+    }
+
+    static int effectivePort(URI uri) {
+        if (uri.getPort() != -1) {
+            return uri.getPort();
+        }
+        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+        return switch (scheme) {
+            case "https" -> 443;
+            case "http" -> 80;
+            default -> -1;
+        };
     }
 
     /** Delegates every resolution to {@link UrlSafety}, which throws before any socket is opened. */

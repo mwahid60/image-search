@@ -186,6 +186,14 @@ storage is not uploaded again.
   HTTP(S) targets with a host and at most `FETCHER_HTTP_MAX_REDIRECTS` times; every
   redirect hop is resolved and validated again by the same resolver. Non-HTTP(S)
   redirect targets are not followed and surface as a non-200 download failure.
+- Credential headers are not replayed across origins. A request interceptor runs
+  for every redirect hop and removes `Authorization`, `Proxy-Authorization`,
+  `Cookie`, and `Cookie2` when the target's scheme, host, or effective port
+  differs from the request that started the chain (this includes HTTPS→HTTP
+  downgrades and port changes). Same-origin redirects keep the headers,
+  non-credential headers such as `User-Agent` and `Accept` are untouched, and once
+  a chain has left its original origin credentials stay revoked for the rest of
+  that chain.
 - SSE events are queued on a dedicated dispatcher, so a slow client cannot block
   the job; failing subscribers are dropped and heartbeats keep idle connections
   alive. The subscriber count is bounded by a semaphore (see `FETCHER_SSE_MAX_SUBSCRIBERS`).
