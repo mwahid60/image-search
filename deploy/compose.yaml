@@ -210,7 +210,10 @@ services:
     depends_on:
       - backend
     environment:
-      API_BASE_URL: "${API_BASE_URL:-http://127.0.0.1:8000}"
+      # Server-side API calls stay on the compose network.
+      API_BASE_URL: "${API_BASE_URL:-http://backend:8000}"
+      # Browser-visible base used to resolve relative imageUrl values.
+      PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL:-http://127.0.0.1:8000}"
       API_TIMEOUT_SECONDS: "${API_TIMEOUT_SECONDS:-30}"
       API_SEARCH_TIMEOUT_SECONDS: "${API_SEARCH_TIMEOUT_SECONDS:-90}"
       FRONTEND_POLL_INTERVAL_SECONDS: "${FRONTEND_POLL_INTERVAL_SECONDS:-3}"
@@ -224,22 +227,6 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
-
-  # The frontend uses API_BASE_URL for server-side API calls AND for resolving
-  # relative imageUrl values in the browser. For a localhost deployment those
-  # two needs conflict inside a container: `localhost` is the frontend itself.
-  # This sidecar shares the frontend network namespace and forwards its
-  # loopback:8000 to backend:8000. The browser still uses the published host
-  # port 8000 directly. With a browser-reachable API_BASE_URL you can drop it.
-  api-proxy:
-    image: docker.io/alpine/socat:1.8.1.3
-    restart: unless-stopped
-    depends_on:
-      - frontend
-    network_mode: "service:frontend"
-    command:
-      - "TCP-LISTEN:8000,fork,reuseaddr,bind=127.0.0.1"
-      - "TCP:backend:8000"
 
 volumes:
   minio-data:

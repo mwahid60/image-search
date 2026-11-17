@@ -52,7 +52,6 @@ Prinsip utama:
 | `fetcher` | `deploy/Containerfile.fetcher` | `127.0.0.1:8081` | Java fetcher + SSE server |
 | `backend` | `deploy/Containerfile.backend` | `127.0.0.1:8000` | FastAPI + Milvus Lite |
 | `frontend` | `deploy/Containerfile.frontend` | `127.0.0.1:8501` | Streamlit, dua halaman |
-| `api-proxy` | `alpine/socat:1.8.1.3` | - | Loopback bridge frontend ke backend untuk `API_BASE_URL` lokal |
 
 Semua port di-bind ke localhost secara default. Ubah `BIND_ADDRESS` di `.env` hanya jika memang perlu mengakses dari mesin lain.
 
@@ -123,8 +122,7 @@ Urutan startup yang terjadi:
 3. `llama-embeddings` memuat model utama dan `mmproj`, lalu membuka port 8080.
 4. `fetcher` menyala dan membuka SSE endpoint.
 5. `backend` menyala, membuka Milvus Lite di volume `milvus-data`, lalu connect ke SSE dan melakukan reconciliation.
-6. `frontend` menyala dan memanggil backend.
-7. `api-proxy` berbagi network namespace frontend dan meneruskan `127.0.0.1:8000` ke `backend:8000`, sehingga `API_BASE_URL=http://127.0.0.1:8000` bekerja untuk panggilan server-side Streamlit sekaligus untuk URL gambar relatif yang dibuka browser.
+6. `frontend` menyala, memanggil backend lewat `API_BASE_URL=http://backend:8000`, dan memakai `PUBLIC_API_BASE_URL=http://127.0.0.1:8000` untuk URL gambar yang dibuka browser.
 
 Compose memakai `depends_on` untuk urutan start, bukan jaminan kesiapan. Service aplikasi memakai restart policy dan harus melakukan retry koneksi saat startup; ini perlu dicek saat integrasi. `x-podman.in_pod: false` membuat Podman Compose tidak menggabungkan semua container ke satu pod, sehingga DNS nama service (`minio`, `backend`, dan seterusnya) dan pemetaan port bekerja seperti Compose biasa.
 
@@ -183,7 +181,7 @@ Buka <http://127.0.0.1:8501>. Ada dua halaman:
 
 MinIO console tersedia di <http://127.0.0.1:9001> dengan credentials dari `.env`.
 
-Frontend memakai `API_BASE_URL` untuk dua hal sekaligus: panggilan HTTP server-side Streamlit dan resolusi `imageUrl` relatif di browser. Karena itu nilainya harus dapat dijangkau browser. Untuk stack lokal, `api-proxy` (socat) meneruskan `127.0.0.1:8000` di network namespace frontend ke `backend:8000`, sementara browser tetap memakai port host 8000. Jika Streamlit dibuka dari mesin lain, ubah `API_BASE_URL` ke host/IP yang dapat dijangkau browser (dan `BIND_ADDRESS` bila perlu); proxy tidak diperlukan untuk pola itu.
+Frontend memisahkan dua URL: `API_BASE_URL=http://backend:8000` untuk panggilan HTTP server-side Streamlit di jaringan compose, dan `PUBLIC_API_BASE_URL=http://127.0.0.1:8000` untuk me-resolve `imageUrl` relatif agar dapat dibuka browser. Jika Streamlit dibuka dari mesin lain, ganti `PUBLIC_API_BASE_URL` ke host/IP yang dapat dijangkau browser tersebut (dan sesuaikan `BIND_ADDRESS` bila perlu); `API_BASE_URL` tetap memakai nama service internal.
 
 ## Alur fetch, SSE, dan ingestion
 
@@ -232,9 +230,10 @@ Semua variabel ada di `.env.example`. Ringkasan:
 | `QUERY_PROMPT_PREFIX` | `task: search result \| query:` | backend |
 | `RECONCILIATION_INTERVAL_SECONDS` | `120` | backend |
 | `INGEST_BATCH_SIZE` | `1` | backend |
-| `API_BASE_URL` | `http://127.0.0.1:8000` | frontend (server-side dan browser) |
+| `API_BASE_URL` | `http://backend:8000` | frontend server-side (internal compose) |
+| `PUBLIC_API_BASE_URL` | `http://127.0.0.1:8000` | frontend / browser (URL gambar) |
 
-Nama variabel di atas adalah kontrak deployment yang dicocokkan dengan implementasi branch `feature/java-fetcher`, `feature/python-backend`, dan `feature/streamlit-frontend`: Java memakai `FETCHER_PORT`, `OPENVERSE_BASE_URL`, `MINIO_IMAGES_PREFIX`, `MINIO_JOBS_PREFIX`; backend memakai `JAVA_BASE_URL`, `IMAGE_PREFIX`, `JOBS_PREFIX`, `QUERY_PROMPT_PREFIX`, `INGEST_BATCH_SIZE`, `RECONCILIATION_*`; frontend memakai `API_BASE_URL`, `API_TIMEOUT_SECONDS`, `API_SEARCH_TIMEOUT_SECONDS`, `FRONTEND_POLL_INTERVAL_SECONDS`. Jika implementasi berubah, sesuaikan `deploy/compose.yaml` dan `.env.example` bersama-sama, jangan mengganti nama prefix default.
+Nama variabel di atas adalah kontrak deployment yang dicocokkan dengan implementasi branch `feature/java-fetcher`, `feature/python-backend`, dan `feature/streamlit-frontend`: Java memakai `FETCHER_PORT`, `OPENVERSE_BASE_URL`, `MINIO_IMAGES_PREFIX`, `MINIO_JOBS_PREFIX`; backend memakai `JAVA_BASE_URL`, `IMAGE_PREFIX`, `JOBS_PREFIX`, `QUERY_PROMPT_PREFIX`, `INGEST_BATCH_SIZE`, `RECONCILIATION_*`; frontend memakai `API_BASE_URL`, `PUBLIC_API_BASE_URL`, `API_TIMEOUT_SECONDS`, `API_SEARCH_TIMEOUT_SECONDS`, `FRONTEND_POLL_INTERVAL_SECONDS`. Jika implementasi berubah, sesuaikan `deploy/compose.yaml` dan `.env.example` bersama-sama, jangan mengganti nama prefix default.
 
 ## Model dan image pinning
 
@@ -299,7 +298,7 @@ Yang benar-benar dijalankan di branch ini (Podman 5.5.0, provider `podman-compos
 - `bash -n scripts/download_models.sh` - lolos, tidak ada error sintaks.
 - `python3 -m py_compile scripts/smoke_test_embeddings.py` - lolos.
 - `podman compose --env-file .env.example -f deploy/compose.yaml config` - exit 0. Build context `../fetcher`, `../backend`, dan `../frontend` ter-resolve ke direktori repo; mount model ter-resolve ke `<repo>/models`; port, env, dan healthcheck ter-render.
-- `podman-compose --dry-run up llama-embeddings`, `up minio`, dan `up api-proxy` - perintah container ter-render benar (volume model, healthcheck, argumen llama.cpp, network alias, `--network=container:<frontend>` untuk proxy), tanpa pull atau start container. `x-podman.in_pod: false` terverifikasi menghasilkan `--network=...:alias=<service>` tanpa `--pod`.
+- `podman-compose --dry-run up llama-embeddings` dan `up minio` - perintah container ter-render benar (volume model, healthcheck, argumen llama.cpp, network alias), tanpa pull atau start container. `x-podman.in_pod: false` terverifikasi menghasilkan `--network=...:alias=<service>` tanpa `--pod`.
 - `scripts/smoke_test_embeddings.py` diuji terhadap server HTTP mock lokal (bukan llama.cpp): skenario lolos mengembalikan exit 0, sedangkan jumlah vector yang salah dan checksum model yang salah mengembalikan exit 1. Ini memvalidasi alur script, bukan kualitas embedding.
 - Metadata model dan image dicek lewat API registry/Hugging Face (tag, digest, ukuran, SHA-256) tanpa menarik image atau mengunduh bobot model.
 
@@ -327,7 +326,7 @@ Evaluasi retrieval juga belum dijalankan. `evaluation_metadata` hanya boleh diba
 - Image MinIO memakai mirror legacy; lihat bagian MinIO image.
 - Belum ada evaluasi retrieval, screenshot, atau hasil benchmark di repository ini.
 - Containerfile mengasumsikan struktur yang didokumentasikan: `fetcher/pom.xml` + `fetcher/src`, `backend/app/main.py` + `backend/pyproject.toml`, `frontend/app.py` + `frontend/image_search/`. Penyesuaian diperlukan jika implementasi memakai layout lain.
-- `api-proxy` berbagi network namespace dengan `frontend`; jika frontend dibuat ulang, restart juga proxy (`podman compose ... restart frontend api-proxy`). Untuk akses dari mesin lain, `API_BASE_URL` harus menunjuk host/IP yang dapat dijangkau browser.
+- Untuk akses dari mesin lain, `PUBLIC_API_BASE_URL` harus menunjuk host/IP yang dapat dijangkau browser. Frontend harus benar-benar membaca `PUBLIC_API_BASE_URL`; jika belum, URL gambar akan memakai `API_BASE_URL` internal dan gagal di browser.
 
 ## Pekerjaan lanjutan
 
