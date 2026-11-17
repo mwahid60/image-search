@@ -233,16 +233,19 @@ Semua variabel ada di `.env.example`. Ringkasan:
 | `LLAMA_THREADS` | `4` | llama.cpp |
 | `OPENVERSE_BASE_URL` | `https://api.openverse.org` | fetcher |
 | `OPENVERSE_CLIENT_ID`, `OPENVERSE_CLIENT_SECRET` | kosong | fetcher (opsional) |
+| `FETCHER_HTTP_MAX_REDIRECTS` | `5` | fetcher |
+| `FETCHER_SSE_MAX_SUBSCRIBERS` | `8` | fetcher |
 | `MILVUS_DB_PATH` | `/data/milvus.db` | backend (Milvus Lite) |
 | `MILVUS_COLLECTION` | `image_embeddings` | backend |
 | `LLAMA_BASE_URL` | `http://llama-embeddings:8080` | backend |
 | `QUERY_PROMPT_PREFIX` | `task: search result \| query:` | backend |
 | `RECONCILIATION_INTERVAL_SECONDS` | `120` | backend |
 | `INGEST_BATCH_SIZE` | `1` | backend |
+| `INGEST_MAX_IMAGE_PIXELS` | `25000000` | backend |
 | `API_BASE_URL` | `http://backend:8000` | frontend server-side (internal compose) |
 | `PUBLIC_API_BASE_URL` | `http://127.0.0.1:8000` | frontend / browser (URL gambar) |
 
-Nama variabel di atas adalah kontrak deployment yang dicocokkan dengan implementasi branch `feature/java-fetcher`, `feature/python-backend`, dan `feature/streamlit-frontend`: Java memakai `FETCHER_PORT`, `OPENVERSE_BASE_URL`, `MINIO_IMAGES_PREFIX`, `MINIO_JOBS_PREFIX`; backend memakai `JAVA_BASE_URL`, `IMAGE_PREFIX`, `JOBS_PREFIX`, `QUERY_PROMPT_PREFIX`, `INGEST_BATCH_SIZE`, `RECONCILIATION_*`; frontend memakai `API_BASE_URL`, `PUBLIC_API_BASE_URL`, `API_TIMEOUT_SECONDS`, `API_SEARCH_TIMEOUT_SECONDS`, `FRONTEND_POLL_INTERVAL_SECONDS`. Jika implementasi berubah, sesuaikan `deploy/compose.yaml` dan `.env.example` bersama-sama, jangan mengganti nama prefix default.
+Nama variabel di atas adalah kontrak deployment yang dicocokkan dengan implementasi branch `feature/java-fetcher`, `feature/python-backend`, dan `feature/streamlit-frontend`: Java memakai `FETCHER_PORT`, `FETCHER_HTTP_MAX_REDIRECTS`, `FETCHER_SSE_MAX_SUBSCRIBERS`, `OPENVERSE_BASE_URL`, `MINIO_IMAGES_PREFIX`, `MINIO_JOBS_PREFIX`; backend memakai `JAVA_BASE_URL`, `IMAGE_PREFIX`, `JOBS_PREFIX`, `QUERY_PROMPT_PREFIX`, `INGEST_BATCH_SIZE`, `INGEST_MAX_IMAGE_PIXELS`, `RECONCILIATION_*`; frontend memakai `API_BASE_URL`, `PUBLIC_API_BASE_URL`, `API_TIMEOUT_SECONDS`, `API_SEARCH_TIMEOUT_SECONDS`, `FRONTEND_POLL_INTERVAL_SECONDS`. Jika implementasi berubah, sesuaikan `deploy/compose.yaml` dan `.env.example` bersama-sama, jangan mengganti nama prefix default.
 
 ## Model dan image pinning
 
