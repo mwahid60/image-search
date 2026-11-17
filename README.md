@@ -56,7 +56,6 @@ Prinsip utama:
 | Service | Image / build | Port host (default) | Fungsi |
 |---|---|---|---|
 | `minio` | `bitnamilegacy/minio:2025.7.23-debian-12-r5` | `127.0.0.1:9000`, console `9001` | Object storage |
-| `minio-init` | `bitnamilegacy/minio-client:2025.7.21-debian-12-r3` | - | Membuat bucket secara idempotent |
 | `llama-embeddings` | `ghcr.io/ggml-org/llama.cpp:server-b12429` | `127.0.0.1:8080` | Embedding text + image |
 | `fetcher` | `deploy/Containerfile.fetcher` | `127.0.0.1:8081` | Java fetcher + SSE server |
 | `backend` | `deploy/Containerfile.backend` | `127.0.0.1:8000` | FastAPI + Milvus Lite |
@@ -127,11 +126,12 @@ podman compose --env-file .env -f deploy/compose.yaml logs -f llama-embeddings b
 Urutan startup yang terjadi:
 
 1. `minio` menyala dan membuat bucket dari `MINIO_DEFAULT_BUCKETS`.
-2. `minio-init` menunggu MinIO, lalu memastikan bucket ada (`mc mb --ignore-existing`).
-3. `llama-embeddings` memuat model utama dan `mmproj`, lalu membuka port 8080.
-4. `fetcher` menyala dan membuka SSE endpoint.
-5. `backend` menyala, membuka Milvus Lite di volume `milvus-data`, lalu connect ke SSE dan melakukan reconciliation.
-6. `frontend` menyala, memanggil backend lewat `API_BASE_URL=http://backend:8000`, dan memakai `PUBLIC_API_BASE_URL=http://127.0.0.1:8000` untuk URL gambar yang dibuka browser.
+2. `llama-embeddings` memuat model utama dan `mmproj`, lalu membuka port 8080.
+3. `fetcher` menyala dan membuka SSE endpoint; `ensureBucket()` Java memastikan bucket tersedia.
+4. `backend` menyala, membuka Milvus Lite di volume `milvus-data`, memastikan bucket lewat `ensureBucket()`, lalu connect ke SSE dan melakukan reconciliation.
+5. `frontend` menyala, memanggil backend lewat `API_BASE_URL=http://backend:8000`, dan memakai `PUBLIC_API_BASE_URL=http://127.0.0.1:8000` untuk URL gambar yang dibuka browser.
+
+Tidak ada container init one-shot untuk MinIO. Bucket dibuat oleh `MINIO_DEFAULT_BUCKETS` di MinIO dan dijaga oleh `ensureBucket()` di Java/Python. Ini disengaja karena podman-compose 1.4.0 dapat menggantung menunggu `--condition=running` pada service one-shot yang sudah `Exited(0)`.
 
 Compose memakai `depends_on` untuk urutan start, bukan jaminan kesiapan. Service aplikasi memakai restart policy dan harus melakukan retry koneksi saat startup; ini perlu dicek saat integrasi. `x-podman.in_pod: false` membuat Podman Compose tidak menggabungkan semua container ke satu pod, sehingga DNS nama service (`minio`, `backend`, dan seterusnya) dan pemetaan port bekerja seperti Compose biasa.
 
@@ -215,7 +215,7 @@ jobs/bank-mas/{jobId}/fetch-manifest.json
 jobs/bank-mas/{jobId}/ingestion-status.json
 ```
 
-Prefix dikonfigurasi lewat `MINIO_IMAGE_PREFIX` dan `MINIO_JOB_PREFIX` dengan nilai default di atas. Jangan memakai prefix lama. Prefix bukan direktori nyata di S3/MinIO; bucket dibuat oleh `minio-init`, sedangkan object key dibuat oleh service.
+Prefix dikonfigurasi lewat `MINIO_IMAGES_PREFIX` dan `MINIO_JOBS_PREFIX` dengan nilai default di atas. Jangan memakai prefix lama. Prefix bukan direktori nyata di S3/MinIO; bucket dibuat oleh `MINIO_DEFAULT_BUCKETS` dan `ensureBucket()` service, sedangkan object key dibuat oleh service.
 
 ## Environment penting
 
@@ -271,7 +271,6 @@ Default CPU: `--n-gpu-layers 0`, `--parallel 1`, `--threads 4`, context/batch 81
 MinIO tidak lagi menyediakan image komunitas anonim di Docker Hub, dan `quay.io/minio/minio` meminta autentikasi saat diverifikasi. Supaya mesin baru bisa menarik image tanpa login registry, compose memakai mirror legacy Bitnami yang dipin:
 
 - `docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5`
-- `docker.io/bitnamilegacy/minio-client:2025.7.21-debian-12-r3`
 
 Image ini tidak mendapat update vendor. Untuk deployment non-local, ganti dengan image MinIO resmi yang tersedia di registry berlangganan/terautentikasi setelah kontrol authentication dan TLS tersedia, lalu sesuaikan environment-nya. Fungsionalitas S3 yang dipakai proyek ini hanya bucket dan object biasa.
 
@@ -353,7 +352,7 @@ Evaluasi retrieval juga belum dijalankan. `evaluation_metadata` hanya boleh diba
 - **`podman compose` tidak menemukan provider**: install `podman-compose` atau jalankan `podman-compose` langsung; perintah di README kompatibel dengan keduanya.
 - **`llama-embeddings` restart terus**: cek `podman compose ... logs llama-embeddings`. Penyebab umum: model belum diunduh, nama file salah, `MODELS_DIR` tidak dapat diakses container, atau image tidak mendukung EmbeddingGemma 2.
 - **Healthcheck llama.cpp gagal**: model besar butuh waktu load. Lihat log; healthcheck punya `start_period` 180 detik.
-- **Bucket tidak ada**: cek log `minio-init`; pastikan credentials di `.env` sama untuk MinIO dan init container.
+- **Bucket tidak ada**: cek log `minio`, pastikan credentials di `.env` sama untuk MinIO dan service aplikasi, lalu cek log `ensureBucket()` di fetcher/backend.
 - **Mengganti password MinIO tidak berpengaruh**: MinIO dengan volume persisten memakai keys hasil inisialisasi pertama. Hapus volume `minio-data` atau set `MINIO_FORCE_NEW_KEYS=yes` sekali, lalu sinkronkan credentials di service lain.
 - **Backend tidak siap**: `GET /ready` menunjukkan dependensi mana yang gagal. Pastikan MinIO, llama.cpp, dan Java fetcher sudah siap.
 - **Milvus Lite tidak bisa menulis**: pastikan volume `milvus-data` tidak di-mount read-only dan user container memiliki akses ke `/data`. Untuk reset data lokal, hapus volume dengan `podman volume rm` setelah stack dihentikan.

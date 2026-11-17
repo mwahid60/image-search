@@ -20,6 +20,10 @@ x-podman:
 
 services:
   minio:
+    # Bucket creation is handled by MINIO_DEFAULT_BUCKETS below plus the Java
+    # and Python ensureBucket paths. No one-shot init service: podman-compose
+    # 1.4.0 waits with --condition=running and can hang after an init container
+    # has already exited successfully.
     # MinIO no longer publishes anonymous community images on Docker Hub and
     # anonymous pulls from quay.io/minio/minio currently require authentication.
     # This pinned Bitnami legacy mirror is used so a fresh machine can pull
@@ -38,31 +42,6 @@ services:
       - "${BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio-data:/bitnami/minio/data
-
-  # Idempotent bucket bootstrap. The MinIO server also creates the bucket from
-  # MINIO_DEFAULT_BUCKETS; this container is an explicit, retrying safety net.
-  minio-init:
-    image: docker.io/bitnamilegacy/minio-client:2025.7.21-debian-12-r3
-    restart: "no"
-    depends_on:
-      - minio
-    environment:
-      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-bankmas-local-admin}"
-      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-bankmas-local-password-change-me}"
-      MINIO_BUCKET: "${MINIO_BUCKET:-bank-mas-image-search}"
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -eu
-        export HOME=/tmp
-        export MC_CONFIG_DIR=/tmp/.mc
-        until mc alias set local "http://minio:9000" "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
-          echo "minio-init: waiting for MinIO at http://minio:9000 ..."
-          sleep 2
-        done
-        mc mb --ignore-existing "local/$$MINIO_BUCKET"
-        mc anonymous set none "local/$$MINIO_BUCKET" >/dev/null 2>&1 || true
-        echo "minio-init: bucket '$$MINIO_BUCKET' is ready"
 
   llama-embeddings:
     # Pin is intentional: EmbeddingGemma 2 needs a llama.cpp build with
@@ -123,7 +102,6 @@ services:
     restart: unless-stopped
     depends_on:
       - minio
-      - minio-init
     environment:
       FETCHER_PORT: "8081"
       MINIO_ENDPOINT: "${MINIO_ENDPOINT:-http://minio:9000}"
@@ -165,7 +143,6 @@ services:
     restart: unless-stopped
     depends_on:
       - minio
-      - minio-init
       - llama-embeddings
       - fetcher
     environment:
