@@ -1,0 +1,11 @@
+# Local runtime data (Milvus Lite database, caches)
+data/
+models/
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/

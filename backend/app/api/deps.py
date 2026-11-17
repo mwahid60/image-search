@@ -1,0 +1,12 @@
+"""FastAPI dependency helpers."""
+
+from __future__ import annotations
+
+from fastapi import Request
+
+from app.container import AppContainer
+
+
+def get_container(request: Request) -> AppContainer:
+    container: AppContainer = request.app.state.container
+    return container
