@@ -1,0 +1,23 @@
+[project]
+name = "bank-mas-image-search-frontend"
+version = "0.1.0"
+description = "Streamlit frontend for the Bank MAS mini image search system"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "streamlit>=1.50,<2",
+    "httpx>=0.27,<1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
