@@ -9,7 +9,7 @@ Tujuan sistem:
 1. Mengambil gambar dari Openverse berdasarkan minimal 20 kelas yang dipilih.
 2. Menyimpan gambar sebagai object di MinIO.
 3. Membuat image embedding langsung dari piksel gambar menggunakan EmbeddingGemma 2 melalui llama.cpp.
-4. Menyimpan embedding di Milvus tanpa duplikat ketika ingestion diulang.
+4. Menyimpan embedding, metadata teknis, atribusi, dan metadata evaluasi di Milvus tanpa duplikat ketika ingestion diulang.
 5. Menyediakan pencarian gambar menggunakan natural-language query melalui Streamlit.
 6. Menyediakan halaman Streamlit terpisah untuk memicu fetching dan memantau prosesnya.
 7. Menggunakan SSE sebagai mekanisme wajib untuk memberi tahu Python bahwa Java telah menyelesaikan fetching dan ingestion dapat dimulai.
@@ -32,8 +32,10 @@ Tujuan sistem:
 - Pencarian hanya boleh menggunakan representasi yang dibuat dari piksel gambar.
 - Title, tags, deskripsi, dan metadata tekstual Openverse tidak boleh menjadi dasar pencarian.
 - Nama kelas yang digunakan saat fetching tidak boleh menjadi dasar pencarian.
-- Metadata Openverse boleh disimpan terpisah untuk evaluasi retrieval.
-- Metadata evaluasi tidak boleh dibaca oleh ingestion maupun search runtime.
+- Metadata Openverse disimpan di Milvus dalam field `evaluation_metadata` untuk evaluasi retrieval.
+- Metadata teknis dan atribusi juga disimpan di Milvus agar dikembalikan bersama hasil vector search.
+- Ingestion hanya boleh menyalin `evaluation_metadata` dari fetch manifest ke Milvus dan tidak boleh mengirimkannya ke model.
+- Search runtime tidak boleh membaca atau menggunakan `evaluation_metadata` untuk input embedding, filter, keyword matching, ranking, maupun reranking.
 - Openverse tidak dipanggil ketika user melakukan pencarian.
 
 ### 2.3 Keputusan operasional
@@ -100,7 +102,7 @@ Prinsip pembagian tanggung jawab:
 - Java hanya bertanggung jawab atas Openverse, download gambar, penyimpanan awal, job fetching, manifest, dan event fetching.
 - Python bertanggung jawab atas orchestration API, SSE consumer, ingestion, embedding, Milvus, pencarian, dan penyediaan gambar hasil pencarian.
 - llama.cpp hanya menjadi inference service dan tidak berkomunikasi langsung dengan MinIO atau Milvus.
-- Milvus tidak menyimpan title, tags, atau nama kelas Openverse untuk pencarian.
+- Milvus menyimpan title, tags, dan nama kelas Openverse hanya di dalam `evaluation_metadata` untuk evaluasi offline. Field tersebut tidak digunakan dalam pencarian.
 - Streamlit tidak berkomunikasi langsung dengan Openverse, llama.cpp, MinIO, atau Milvus.
 
 ## 5. Diagram Fetching dan Ingestion
@@ -115,11 +117,9 @@ flowchart LR
     SRC["External Image Hosts"]
 
     MINIO[("MinIO<br/>images/ + jobs/")]
-    EVAL[("MinIO<br/>evaluation/<br/>tidak digunakan untuk search")]
-
     INGEST["Python Ingestion Pipeline"]
     MODEL["llama.cpp / llama-server<br/>EmbeddingGemma 2 + mmproj"]
-    MILVUS[("Milvus Lite<br/>Image Vectors")]
+    MILVUS[("Milvus Lite<br/>Image Vectors + Metadata")]
 
     U -- "1. Pilih kelas dan jumlah gambar<br/>klik Fetch Images" --> ST
     ST -- "2. POST /api/v1/fetch-jobs" --> PY
@@ -129,26 +129,25 @@ flowchart LR
 
     JAVA -- "5. Search per class" --> OV
     OV -- "Image URLs + metadata" --> JAVA
-    JAVA -- "6. Download dengan timeout<br/>retry + rate-limit handling" --> SRC
+    JAVA -- "6. Download<br/>rate-limit + timeout handling" --> SRC
     SRC -- "Image bytes" --> JAVA
 
-    JAVA -- "7. Simpan image objects" --> MINIO
-    JAVA -- "Simpan metadata evaluasi terpisah" --> EVAL
-    JAVA -- "8. Simpan fetch manifest COMPLETED<br/>setelah seluruh hasil dicatat" --> MINIO
+    JAVA -- "7. Save image objects" --> MINIO
+    JAVA -- "8. Save fetch<br/>references + metadata" --> MINIO
 
     JAVA -. "9. SSE event: fetch.completed<br/>eventId + jobId + manifestKey" .-> PY
     PY -- "10. Enqueue jobId secara idempotent" --> INGEST
 
     INGEST -- "11. Baca manifest dan gambar" --> MINIO
-    INGEST -- "12. Validate + SHA-256<br/>kirim image bytes" --> MODEL
+    INGEST -- "12. Validate + SHA-256<br/>kirim hanya image bytes" --> MODEL
     MODEL -- "Image vector 768d" --> INGEST
-    INGEST -- "13. Normalize + upsert<br/>image_id + vector + object_key" --> MILVUS
+    INGEST -- "13. Normalize + upsert<br/>vector + technical metadata<br/>attribution + evaluation_metadata" --> MILVUS
     INGEST -- "14. Simpan ingestion status INDEXED" --> MINIO
 
     ST -- "Poll GET /api/v1/fetch-jobs/jobId" --> PY
 ```
 
-SSE bersifat wajib untuk trigger otomatis. Fallback tidak menggantikan SSE, tetapi memastikan pekerjaan tetap dapat diproses ketika notifikasi tidak diterima.
+SSE bersifat wajib untuk trigger otomatis. Fallback tidak menggantikan SSE, tetapi memastikan pekerjaan tetap dapat diproses ketika notifikasi tidak diterima. Metadata Openverse disalin dari manifest ke Milvus untuk evaluasi, tetapi tidak dikirim ke model atau digunakan untuk pencarian.
 
 ## 6. Diagram Pencarian
 
@@ -158,7 +157,7 @@ flowchart LR
     ST["Streamlit<br/>Search Page"]
     PY["Python FastAPI<br/>Search API"]
     MODEL["llama.cpp / llama-server<br/>EmbeddingGemma 2"]
-    MILVUS[("Milvus Lite<br/>Image Vectors")]
+    MILVUS[("Milvus Lite<br/>Image Vectors + Metadata")]
     MINIO[("MinIO<br/>images/")]
 
     U -- "1. Natural-language query<br/>contoh: a dog playing in the snow" --> ST
@@ -166,17 +165,16 @@ flowchart LR
     PY -- "3. Text query" --> MODEL
     MODEL -- "Text vector 768d" --> PY
     PY -- "4. Normalize + top-k cosine search" --> MILVUS
-    MILVUS -- "image_id + object_key + score" --> PY
-    PY -- "5. Validasi object dan bentuk image URL" --> MINIO
-    PY -- "6. Results + scores + image URLs" --> ST
-    ST -- "7. GET /api/v1/images/image_id" --> PY
-    PY -- "8. Stream image object" --> MINIO
+    MILVUS -- "image_id + object_key + score<br/>technical + attribution metadata" --> PY
+    PY -- "5. Results + scores + image URLs" --> ST
+    ST -- "6. GET /api/v1/images/image_id" --> PY
+    PY -- "7. Get image menggunakan object_key" --> MINIO
     MINIO -- "Image bytes" --> PY
     PY -- "Image response" --> ST
-    ST -- "9. Tampilkan image grid" --> U
+    ST -- "8. Tampilkan image grid + atribusi" --> U
 ```
 
-Pencarian tidak berinteraksi dengan Java atau Openverse.
+Pencarian tidak berinteraksi dengan Java atau Openverse. Milvus langsung mengembalikan metadata teknis dan atribusi bersama hasil vector search. Field `evaluation_metadata` tidak dimasukkan ke `output_fields` atau proses ranking. MinIO tetap diakses untuk mengambil image bytes, bukan metadata.
 
 ## 7. Halaman Streamlit
 
@@ -215,7 +213,8 @@ Fungsi:
 - Tombol atau form submit untuk menjalankan pencarian.
 - Menampilkan hasil dalam image grid.
 - Menampilkan similarity score secara opsional.
-- Tidak menampilkan title, tags, atau kelas Openverse sebagai dasar maupun penjelasan hasil pencarian.
+- Tidak menampilkan title, tags, atau kelas Openverse sebagai dasar maupun penjelasan relevansi hasil pencarian.
+- Boleh menampilkan creator, license, dan source URL untuk atribusi.
 
 State UI minimal:
 
@@ -236,165 +235,25 @@ Tidak perlu menambahkan halaman lain untuk MVP.
 
 ## 8. Kontrak REST API
 
-Base path dapat disesuaikan saat implementasi, tetapi kontrak dan tanggung jawabnya harus tetap konsisten.
+Kontrak request, response, dan aturan penggunaan metadata untuk Python API serta Java API telah dipindahkan ke [api-spec.md](./api-spec.md).
 
-### 8.1 Python API untuk Streamlit
+Ringkasan endpoint:
 
-#### Memulai fetching
+- `POST /api/v1/fetch-jobs`
+- `GET /api/v1/fetch-jobs/{jobId}`
+- `POST /api/v1/ingest/{jobId}`
+- `POST /api/v1/search`
+- `GET /api/v1/images/{imageId}`
+- `GET /health`
+- `GET /ready`
 
-```http
-POST /api/v1/fetch-jobs
-Content-Type: application/json
-
-{
-  "classes": ["dog", "cat", "bicycle"],
-  "imagesPerClass": 20
-}
-```
-
-Respons:
-
-```http
-HTTP/1.1 202 Accepted
-```
-
-```json
-{
-  "jobId": "fetch-20261116-001",
-  "status": "FETCHING"
-}
-```
-
-Python meneruskan request ke Java. Python tidak mengunduh gambar dari Openverse sendiri.
-
-#### Membaca status gabungan
-
-```http
-GET /api/v1/fetch-jobs/{jobId}
-```
-
-Respons minimal:
-
-```json
-{
-  "jobId": "fetch-20261116-001",
-  "fetchStatus": "COMPLETED",
-  "ingestionStatus": "INDEXED",
-  "downloaded": 55,
-  "failedDownloads": 5,
-  "indexed": 54,
-  "duplicates": 1,
-  "errors": []
-}
-```
-
-#### Retry ingestion
-
-```http
-POST /api/v1/ingest/{jobId}
-```
-
-Endpoint ini wajib tersedia untuk recovery. Request untuk job yang sama harus idempotent.
-
-#### Search
-
-```http
-POST /api/v1/search
-Content-Type: application/json
-
-{
-  "query": "a dog playing in the snow",
-  "topK": 12
-}
-```
-
-Respons:
-
-```json
-{
-  "query": "a dog playing in the snow",
-  "results": [
-    {
-      "imageId": "7ca92f...",
-      "score": 0.8123,
-      "imageUrl": "/api/v1/images/7ca92f..."
-    }
-  ]
-}
-```
-
-#### Mengambil gambar
-
-```http
-GET /api/v1/images/{imageId}
-```
-
-Python mengambil `object_key` berdasarkan `imageId`, membaca object dari MinIO, lalu mengembalikan image bytes dengan content type yang benar. Pendekatan ini menghindari masalah URL MinIO internal yang tidak dapat diakses browser.
-
-#### Health
-
-```http
-GET /health
-GET /ready
-```
-
-Readiness setidaknya memeriksa koneksi ke Milvus, MinIO, dan llama.cpp. Status SSE consumer juga perlu diekspos untuk observability.
-
-### 8.2 Java API internal
-
-```http
-POST /api/v1/fetch-jobs
-GET  /api/v1/fetch-jobs/{jobId}
-GET  /api/v1/events/fetch
-```
-
-`POST /api/v1/fetch-jobs` harus segera mengembalikan `202 Accepted` dan menjalankan pekerjaan di background. Endpoint tidak boleh menunggu seluruh download selesai.
+Search dapat mengembalikan metadata teknis dan atribusi dari Milvus, tetapi tidak boleh mengembalikan atau menggunakan `evaluation_metadata`.
 
 ## 9. Kontrak SSE
 
-### 9.1 Koneksi
+Kontrak koneksi, event, dan pemrosesan SSE telah dipindahkan ke [api-spec.md](./api-spec.md).
 
-- Java menjadi SSE server.
-- Python menjadi SSE client.
-- Python membuka koneksi ke `GET /api/v1/events/fetch` ketika startup.
-- Python melakukan reconnect dengan exponential backoff jika koneksi terputus.
-- Java mengirim heartbeat atau comment frame secara berkala untuk menjaga koneksi.
-- Java hanya mengirim event completion setelah fetch manifest `COMPLETED` berhasil disimpan di MinIO.
-
-### 9.2 Event
-
-```text
-id: fetch:fetch-20261116-001:completed
-event: fetch.completed
-data: {"jobId":"fetch-20261116-001","manifestKey":"jobs/fetch-20261116-001/fetch-manifest.json"}
-```
-
-Isi event:
-
-- `eventId` dari SSE `id` untuk logging dan deduplikasi runtime.
-- `jobId` untuk identitas pekerjaan.
-- `manifestKey` untuk membaca daftar hasil fetching.
-
-SSE tidak membawa image bytes.
-
-### 9.3 Pemrosesan event
-
-Ketika event diterima, Python harus:
-
-1. Memvalidasi payload.
-2. Mengabaikan event duplikat yang sedang atau sudah diproses.
-3. Menambahkan `jobId` ke ingestion queue in-memory.
-4. Membaca manifest langsung dari MinIO.
-5. Menjalankan ingestion secara idempotent.
-6. Mencatat status ingestion ke MinIO.
-7. Mencatat error tanpa menghentikan SSE consumer.
-
-SSE tidak menjamin delivery atau replay. Oleh karena itu, sistem wajib memiliki mekanisme berikut:
-
-- reconciliation saat Python startup,
-- reconciliation berkala dengan interval yang dapat dikonfigurasi,
-- retry melalui `POST /api/v1/ingest/{jobId}`,
-- idempotent ingestion untuk setiap gambar.
+SSE `fetch.completed` wajib menjadi trigger utama ingestion. Event hanya membawa `eventId`, `jobId`, dan `manifestKey`. Image bytes serta metadata gambar tidak dikirim melalui SSE. Reconciliation dan retry manual tetap tersedia sebagai fallback.
 
 ## 10. Struktur Object di MinIO
 
@@ -404,14 +263,13 @@ Gunakan satu bucket aplikasi dengan prefix yang jelas:
 images/
   {sha256}.{extension}
 
-evaluation/
-  {imageId}.json
-
 jobs/
   {jobId}/
     fetch-manifest.json
     ingestion-status.json
 ```
+
+MinIO hanya menyimpan image objects dan catatan pekerjaan. Metadata gambar disimpan di Milvus bersama image vector dan tidak lagi disimpan sebagai object metadata terpisah.
 
 ### 10.1 Image objects
 
@@ -420,25 +278,7 @@ jobs/
 - File yang identik memiliki object key yang sama.
 - Metadata pencarian tidak disematkan ke object key.
 
-### 10.2 Evaluation metadata
-
-Metadata Openverse disimpan hanya di `evaluation/`, misalnya:
-
-```json
-{
-  "imageId": "7ca92f...",
-  "requestedClass": "dog",
-  "title": "Openverse title",
-  "tags": ["dog", "animal"],
-  "sourceUrl": "https://...",
-  "license": "...",
-  "creator": "..."
-}
-```
-
-File ini hanya boleh dibaca oleh script evaluasi. Ingestion dan search dilarang membaca prefix ini.
-
-### 10.3 Fetch manifest
+### 10.2 Fetch manifest
 
 Java menulis manifest final setelah proses fetching selesai:
 
@@ -452,7 +292,18 @@ Java menulis manifest final setelah proses fetching selesai:
       "imageId": "7ca92f...",
       "objectKey": "images/7ca92f.jpg",
       "contentType": "image/jpeg",
-      "sha256": "7ca92f..."
+      "sha256": "7ca92f...",
+      "width": 1024,
+      "height": 768,
+      "sourceUrl": "https://commons.wikimedia.org/...",
+      "license": "cc-by",
+      "creator": "Nama pembuat",
+      "evaluationMetadata": {
+        "openverseId": "abc123",
+        "requestedClass": "dog",
+        "title": "A dog in the snow",
+        "tags": ["dog", "snow", "animal"]
+      }
     }
   ],
   "failedDownloads": [
@@ -469,7 +320,7 @@ Java menulis manifest final setelah proses fetching selesai:
 
 Jika fetching gagal total, gunakan status `FAILED` dan jangan kirim `fetch.completed`. Kegagalan sebagian tetap dapat menghasilkan `COMPLETED` dengan daftar `failedDownloads`, selama terdapat hasil yang dapat diproses. Status `PARTIAL` boleh digunakan jika lebih memperjelas implementasi, tetapi harus konsisten di Java, Python, dan UI.
 
-### 10.4 Ingestion status
+### 10.3 Ingestion status
 
 Python menulis status berikut:
 
@@ -505,12 +356,15 @@ Urutan untuk setiap gambar:
 3. Validasi bahwa object dapat didekode sebagai gambar.
 4. Hitung SHA-256 dari image bytes dan cocokkan dengan manifest.
 5. Bentuk `image_id` deterministik dari SHA-256.
-6. Kirim image bytes ke llama.cpp embeddings endpoint menggunakan format multimodal yang benar.
-7. Validasi respons berisi vector berdimensi 768 dan nilai numerik yang valid.
-8. Lakukan L2 normalization jika menggunakan cosine similarity.
-9. Upsert ke Milvus menggunakan primary key `image_id`.
-10. Catat kegagalan per gambar tanpa menghentikan seluruh job.
-11. Simpan `ingestion-status.json` setelah seluruh gambar selesai atau gagal diproses.
+6. Baca metadata teknis, atribusi, dan `evaluationMetadata` dari manifest hanya untuk disimpan ke Milvus.
+7. Kirim hanya image bytes ke llama.cpp embeddings endpoint menggunakan format multimodal yang benar.
+8. Validasi respons berisi vector berdimensi 768 dan nilai numerik yang valid.
+9. Lakukan L2 normalization jika menggunakan cosine similarity.
+10. Upsert vector, metadata teknis, atribusi, dan `evaluation_metadata` ke Milvus menggunakan primary key `image_id`.
+11. Catat kegagalan per gambar tanpa menghentikan seluruh job.
+12. Simpan `ingestion-status.json` setelah seluruh gambar selesai atau gagal diproses.
+
+`evaluation_metadata` tidak boleh menjadi input model, filter search, keyword matching, ranking, atau reranking.
 
 Pengaturan resource:
 
@@ -579,15 +433,26 @@ Collection: `image_embeddings`
 | `embedding` | FLOAT_VECTOR, dim=768 | Embedding ternormalisasi |
 | `object_key` | VARCHAR | Lokasi gambar di MinIO |
 | `content_type` | VARCHAR | MIME type gambar |
+| `width` | INT32 | Lebar gambar dalam piksel |
+| `height` | INT32 | Tinggi gambar dalam piksel |
+| `sha256` | VARCHAR | Hash isi file untuk validasi dan deduplikasi |
+| `source_url` | VARCHAR | URL sumber untuk atribusi |
+| `license` | VARCHAR | Lisensi gambar untuk atribusi |
+| `creator` | VARCHAR | Pembuat gambar untuk atribusi |
+| `evaluation_metadata` | JSON | Title, tags, requested class, dan metadata evaluasi Openverse |
 | `created_at` | INT64 | Unix timestamp ingestion pertama |
 
 Aturan:
 
-- Tidak ada field `title`, `tags`, `requested_class`, atau `description` dari Openverse.
-- Metric: `COSINE`.
+- Title, tags, `requested_class`, dan deskripsi Openverse hanya boleh berada di dalam `evaluation_metadata`.
+- `evaluation_metadata` tidak boleh digunakan sebagai input embedding, filter, keyword matching, ranking, atau reranking.
+- Jangan membuat scalar atau JSON index untuk `evaluation_metadata` kebutuhan search.
+- Metric vector: `COSINE`.
 - Untuk dataset kecil, gunakan index sederhana yang didukung Milvus Lite, misalnya `FLAT`, agar tidak membutuhkan proses training index.
 - Query search menggunakan `top_k` yang divalidasi.
-- Output search hanya mengambil `image_id`, `object_key`, `content_type`, dan score.
+- `output_fields` search hanya mengambil `image_id`, `object_key`, `content_type`, `source_url`, `license`, `creator`, dan field teknis lain yang diperlukan.
+- `source_url`, `license`, dan `creator` hanya digunakan untuk atribusi, bukan untuk menjelaskan relevansi.
+- Script evaluasi membaca `evaluation_metadata` setelah ranking vector selesai dan tidak mengembalikannya ke proses ranking.
 - Upsert dengan `image_id` yang sama tidak boleh menambah row baru.
 
 ## 14. Penanganan Openverse dan Download
@@ -672,7 +537,8 @@ Skenario yang harus lulus:
 ├── models/                     # GGUF lokal, di-ignore Git
 ├── data/                       # Milvus Lite dan data lokal, di-ignore Git
 ├── docs/
-│   └── rencana-implementasi.md
+│   ├── rencana-implementasi.md
+│   └── api-spec.md
 ├── .env.example
 ├── .gitignore
 └── README.md
@@ -715,8 +581,8 @@ Acceptance criteria:
 - Implementasikan background fetching dan status endpoint.
 - Implementasikan Openverse client, downloader, retry, dan rate-limit handling.
 - Simpan gambar ke `images/`.
-- Simpan metadata ke `evaluation/`.
-- Tulis fetch manifest.
+- Sertakan metadata teknis, atribusi, dan metadata evaluasi Openverse di fetch manifest.
+- Jangan menyimpan metadata gambar sebagai object terpisah di MinIO.
 
 Acceptance criteria:
 
@@ -741,13 +607,15 @@ Acceptance criteria:
 ### Fase 5: Milvus ingestion
 
 - Buat collection dan schema.
-- Implementasikan idempotent upsert.
+- Implementasikan idempotent upsert untuk vector, metadata teknis, atribusi, dan `evaluation_metadata`.
 - Implementasikan ingestion status di MinIO.
 - Implementasikan retry manual dan reconciliation.
 
 Acceptance criteria:
 
 - Menjalankan ingestion dua kali tidak menambah duplikat.
+- Metadata tersimpan dalam record yang sama dengan image vector.
+- `evaluation_metadata` tidak dikirim ke model atau digunakan dalam search.
 - Event SSE yang terlewat dapat dipulihkan.
 - Python restart tidak menghilangkan catatan manifest dan status.
 
@@ -762,7 +630,7 @@ Acceptance criteria:
 
 - Query natural language mengembalikan gambar dari koleksi lokal.
 - Tidak ada request ke Openverse saat search.
-- Tidak ada penggunaan metadata Openverse dalam search.
+- `evaluation_metadata` tidak digunakan sebagai input, filter, keyword matching, ranking, atau reranking dalam search.
 
 ### Fase 7: Streamlit dua halaman
 
@@ -833,9 +701,9 @@ Skenario integrasi minimal:
 
 ### 18.4 Evaluasi retrieval bonus
 
-- Gunakan metadata di `evaluation/` hanya pada script evaluasi.
+- Gunakan `evaluation_metadata` dari Milvus hanya pada script evaluasi setelah ranking vector selesai.
 - Hitung metric sederhana seperti precision@k per kelas.
-- Jangan membawa metadata evaluasi ke search runtime.
+- Jangan membawa metadata evaluasi ke search runtime atau proses ranking.
 - Laporkan konfigurasi query dan keterbatasan ground truth karena metadata Openverse dapat tidak lengkap atau tidak akurat.
 
 ## 19. Resource dan Operasional Laptop
@@ -861,7 +729,8 @@ Sistem dianggap selesai jika seluruh poin berikut terpenuhi:
 - [ ] Python menerima SSE dan otomatis menjalankan ingestion.
 - [ ] Reconciliation dan retry manual tersedia untuk event yang terlewat atau ingestion yang gagal.
 - [ ] Embedding dibuat hanya dari piksel gambar dan query user.
-- [ ] Milvus menyimpan image vector dan metadata teknis, bukan metadata pencarian Openverse.
+- [ ] Milvus menyimpan image vector, metadata teknis, atribusi, dan `evaluation_metadata` dalam satu record.
+- [ ] `evaluation_metadata` tidak digunakan sebagai input, filter, keyword matching, ranking, atau reranking dalam search.
 - [ ] Re-ingestion tidak membuat duplikat.
 - [ ] Halaman Search menampilkan image grid berdasarkan natural-language query.
 - [ ] Search tidak memanggil Openverse.
