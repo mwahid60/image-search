@@ -1,9 +1,11 @@
 package com.bankmas.imagesearch.fetcher;
 
 import com.bankmas.imagesearch.fetcher.events.FetchEventHub;
+import com.bankmas.imagesearch.fetcher.http.HttpTransport;
 import com.bankmas.imagesearch.fetcher.job.FetchJobService;
 import com.bankmas.imagesearch.fetcher.manifest.ManifestStore;
 import com.bankmas.imagesearch.fetcher.storage.ObjectStorage;
+import com.bankmas.imagesearch.fetcher.download.UrlSafety;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -28,11 +30,19 @@ class FetcherApplicationContextTest {
     @Autowired
     private ManifestStore manifestStore;
 
+    @Autowired
+    private HttpTransport httpTransport;
+
+    @Autowired
+    private UrlSafety urlSafety;
+
     @Test
     void contextLoads() {
         org.assertj.core.api.Assertions.assertThat(fetchJobService).isNotNull();
         org.assertj.core.api.Assertions.assertThat(fetchEventHub).isNotNull();
         org.assertj.core.api.Assertions.assertThat(objectStorage).isNotNull();
         org.assertj.core.api.Assertions.assertThat(manifestStore).isNotNull();
+        org.assertj.core.api.Assertions.assertThat(httpTransport).isNotNull();
+        org.assertj.core.api.Assertions.assertThat(urlSafety).isNotNull();
     }
 }

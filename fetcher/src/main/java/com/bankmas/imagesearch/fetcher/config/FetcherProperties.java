@@ -21,9 +21,10 @@ public record FetcherProperties(
 
     public static final String DEFAULT_USER_AGENT = "bank-mas-image-fetcher/0.1.0";
 
-    public record Http(Duration connectTimeout) {
+    public record Http(Duration connectTimeout, int maxRedirects) {
         public Http {
             connectTimeout = positive(connectTimeout, Duration.ofSeconds(10));
+            maxRedirects = maxRedirects <= 0 ? 5 : Math.min(maxRedirects, 20);
         }
     }
 
@@ -115,10 +116,11 @@ public record FetcherProperties(
         }
     }
 
-    public record Events(Duration timeout, long heartbeatIntervalMs) {
+    public record Events(Duration timeout, long heartbeatIntervalMs, int maxSubscribers) {
         public Events {
             timeout = positive(timeout, Duration.ofMinutes(30));
             heartbeatIntervalMs = heartbeatIntervalMs <= 0 ? 15_000L : heartbeatIntervalMs;
+            maxSubscribers = maxSubscribers <= 0 ? 8 : Math.min(maxSubscribers, 1_000);
         }
     }
 

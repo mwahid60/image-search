@@ -3,19 +3,23 @@ package com.bankmas.imagesearch.fetcher.download;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Locale;
 
 /**
- * Rejects image URLs that are not plain HTTP(S) or that resolve to loopback,
- * private, link-local, CGNAT, multicast, or unique-local addresses.
+ * Policy for outbound host names: only plain HTTP(S) and only public unicast
+ * addresses unless private addresses are explicitly allowed.
  *
- * <p>This is best-effort SSRF hardening: Openverse supplies the URLs, and this
- * check keeps a malicious result from making the fetcher reach internal services.
- * DNS is resolved once here; the transport may resolve again, so a rebinding
- * attacker could still race the check. For this assignment that trade-off is
- * documented in the README.</p>
+ * <p>The same {@link #resolveForConnection(String)} method is used twice:</p>
+ * <ol>
+ *   <li>as a pre-check in the downloader for a fast, clear error, and</li>
+ *   <li>as the HTTP client's {@code DnsResolver}, so the addresses that are
+ *       validated are exactly the addresses used for the TCP connection.</li>
+ * </ol>
+ *
+ * <p>Because validation happens inside the connection layer, a host that is
+ * rebound between the pre-check and the connect is still rejected. Redirects
+ * are followed through the same client and therefore through the same
+ * resolver, so every redirect hop is re-validated before it can connect.</p>
  */
 public final class UrlSafety {
 
@@ -56,6 +60,36 @@ public final class UrlSafety {
         return uri;
     }
 
+    /**
+     * Resolves {@code host} and rejects the result when any address is not a
+     * public unicast address. The returned addresses are the only ones the
+     * connection layer may use.
+     */
+    public InetAddress[] resolveForConnection(String host) throws UnknownHostException {
+        if (host == null || host.isBlank()) {
+            throw new UnknownHostException("empty host");
+        }
+        String normalizedHost = stripBrackets(host).toLowerCase(Locale.ROOT);
+        if (!allowPrivateAddresses && isBlockedHostName(normalizedHost)) {
+            throw new BlockedHostException("blocked host name: " + normalizedHost);
+        }
+        InetAddress[] addresses = resolver.resolve(normalizedHost);
+        if (addresses == null || addresses.length == 0) {
+            throw new UnknownHostException(normalizedHost);
+        }
+        if (allowPrivateAddresses) {
+            return addresses;
+        }
+        for (InetAddress address : addresses) {
+            if (isBlocked(address)) {
+                throw new BlockedHostException(
+                        "host " + normalizedHost + " resolved to a non-public address");
+            }
+        }
+        return addresses;
+    }
+
+    /** Pre-check variant that maps policy failures to manifest-safe reasons. */
     public void assertAllowed(URI uri) {
         if (allowPrivateAddresses) {
             return;
@@ -64,31 +98,20 @@ public final class UrlSafety {
         if (host == null) {
             throw new DownloadFailedException("invalid_url");
         }
-        String normalizedHost = stripBrackets(host).toLowerCase(Locale.ROOT);
-        if (normalizedHost.equals("localhost")
-                || normalizedHost.endsWith(".localhost")
-                || normalizedHost.endsWith(".local")
-                || normalizedHost.endsWith(".internal")) {
-            throw new DownloadFailedException("blocked_host");
-        }
-        InetAddress[] addresses;
         try {
-            addresses = resolver.resolve(normalizedHost);
+            resolveForConnection(host);
+        } catch (BlockedHostException e) {
+            throw new DownloadFailedException("blocked_host", e);
         } catch (UnknownHostException e) {
             throw new DownloadFailedException("unknown_host", e);
         }
-        if (addresses == null || addresses.length == 0) {
-            throw new DownloadFailedException("unknown_host");
-        }
-        List<InetAddress> blocked = new ArrayList<>();
-        for (InetAddress address : addresses) {
-            if (isBlocked(address)) {
-                blocked.add(address);
-            }
-        }
-        if (!blocked.isEmpty()) {
-            throw new DownloadFailedException("blocked_host");
-        }
+    }
+
+    static boolean isBlockedHostName(String host) {
+        return host.equals("localhost")
+                || host.endsWith(".localhost")
+                || host.endsWith(".local")
+                || host.endsWith(".internal");
     }
 
     static boolean isBlocked(InetAddress address) {

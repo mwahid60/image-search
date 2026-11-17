@@ -1,9 +1,14 @@
 package com.bankmas.imagesearch.fetcher.events;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.bankmas.imagesearch.fetcher.api.ApiExceptionHandler;
 import com.bankmas.imagesearch.fetcher.api.FetchEventController;
 import com.bankmas.imagesearch.fetcher.config.Json;
 import java.time.Duration;
@@ -18,13 +23,11 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 class FetchEventHubTest {
 
     private final List<Runnable> pending = new ArrayList<>();
-    private final FetchEventHub hub = new FetchEventHub(Json.mapper(), pending::add, Duration.ofMinutes(1));
-    private final MockMvc mockMvc =
-            MockMvcBuilders.standaloneSetup(new FetchEventController(hub)).build();
 
     @Test
     void publishesContractEventAfterTheDispatchIsScheduled() throws Exception {
-        MvcResult result = subscribe();
+        FetchEventHub hub = hub(8);
+        MvcResult result = subscribe(mvc(hub));
         FetchCompletedEvent event = new FetchCompletedEvent(
                 "fetch:fetch-20261116-001:completed",
                 "fetch-20261116-001",
@@ -47,8 +50,10 @@ class FetchEventHubTest {
 
     @Test
     void deliversTheEventToEveryConnectedClient() throws Exception {
-        MvcResult first = subscribe();
-        MvcResult second = subscribe();
+        FetchEventHub hub = hub(8);
+        MockMvc mvc = mvc(hub);
+        MvcResult first = subscribe(mvc);
+        MvcResult second = subscribe(mvc);
         assertThat(hub.subscriberCount()).isEqualTo(2);
 
         hub.publishCompleted(new FetchCompletedEvent(
@@ -62,7 +67,8 @@ class FetchEventHubTest {
 
     @Test
     void sendsHeartbeatCommentsToIdleClients() throws Exception {
-        MvcResult result = subscribe();
+        FetchEventHub hub = hub(8);
+        MvcResult result = subscribe(mvc(hub));
 
         hub.heartbeat();
         pending.forEach(Runnable::run);
@@ -71,17 +77,58 @@ class FetchEventHubTest {
     }
 
     @Test
-    void removesSubscribersWhenTheClientDisconnects() throws Exception {
-        MvcResult result = subscribe();
+    void removesSubscribersAndReturnsSlotsWhenClientsDisconnect() throws Exception {
+        FetchEventHub hub = hub(1);
+        MockMvc mvc = mvc(hub);
+        MvcResult first = subscribe(mvc);
         assertThat(hub.subscriberCount()).isEqualTo(1);
 
-        result.getRequest().getAsyncContext().complete();
+        first.getRequest().getAsyncContext().complete();
 
         assertThat(hub.subscriberCount()).isZero();
+        // The slot must be available again for a reconnecting client.
+        subscribe(mvc);
+        assertThat(hub.subscriberCount()).isEqualTo(1);
     }
 
-    private MvcResult subscribe() throws Exception {
-        return mockMvc.perform(get("/api/v1/events/fetch").accept(MediaType.TEXT_EVENT_STREAM))
+    @Test
+    void rejectsSubscribersAboveTheConfiguredLimit() throws Exception {
+        FetchEventHub hub = hub(1);
+        MockMvc mvc = mvc(hub);
+        subscribe(mvc);
+
+        // A second connection is refused with 429 before an emitter is created.
+        mvc.perform(get("/api/v1/events/fetch").accept(MediaType.TEXT_EVENT_STREAM))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(header().string("Retry-After", "30"))
+                .andExpect(jsonPath("$.code").value("too_many_subscribers"));
+
+        assertThat(hub.subscriberCount()).isEqualTo(1);
+    }
+
+    @Test
+    void failsFastWithAnExceptionWhenNoSlotIsAvailable() {
+        FetchEventHub hub = hub(1);
+        hub.subscribe();
+
+        assertThatThrownBy(hub::subscribe)
+                .isInstanceOf(TooManySubscribersException.class)
+                .hasMessageContaining("1");
+        assertThat(hub.subscriberCount()).isEqualTo(1);
+    }
+
+    private FetchEventHub hub(int maxSubscribers) {
+        return new FetchEventHub(Json.mapper(), pending::add, Duration.ofMinutes(1), maxSubscribers);
+    }
+
+    private static MockMvc mvc(FetchEventHub hub) {
+        return MockMvcBuilders.standaloneSetup(new FetchEventController(hub))
+                .setControllerAdvice(new ApiExceptionHandler(Json.mapper()))
+                .build();
+    }
+
+    private static MvcResult subscribe(MockMvc mvc) throws Exception {
+        return mvc.perform(get("/api/v1/events/fetch").accept(MediaType.TEXT_EVENT_STREAM))
                 .andExpect(request().asyncStarted())
                 .andReturn();
     }

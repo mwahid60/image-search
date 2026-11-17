@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,21 +33,34 @@ public final class FetchEventHub implements FetchEventPublisher {
     private final ObjectMapper mapper;
     private final Executor dispatcher;
     private final Duration timeout;
+    private final int maxSubscribers;
+    private final Semaphore slots;
 
-    public FetchEventHub(ObjectMapper mapper, Executor dispatcher, Duration timeout) {
+    public FetchEventHub(ObjectMapper mapper, Executor dispatcher, Duration timeout, int maxSubscribers) {
         this.mapper = mapper;
         this.dispatcher = dispatcher;
         this.timeout = timeout;
+        this.maxSubscribers = Math.max(1, maxSubscribers);
+        this.slots = new Semaphore(this.maxSubscribers);
     }
 
     public SseEmitter subscribe() {
-        SseEmitter emitter = new SseEmitter(timeout.toMillis());
-        Subscriber subscriber = new Subscriber(emitter, () -> removeSubscriber(emitter));
+        if (!slots.tryAcquire()) {
+            throw new TooManySubscribersException(maxSubscribers);
+        }
+        SseEmitter emitter;
+        try {
+            emitter = new SseEmitter(timeout.toMillis());
+        } catch (RuntimeException e) {
+            slots.release();
+            throw e;
+        }
+        Subscriber subscriber = new Subscriber(emitter, () -> releaseSubscriber(emitter));
         subscribers.add(subscriber);
         if (!subscriber.sendComment("connected")) {
-            removeSubscriber(emitter);
+            releaseSubscriber(emitter);
         }
-        log.info("SSE subscriber connected, {} active", subscribers.size());
+        log.info("SSE subscriber connected, {} active (max {})", subscribers.size(), maxSubscribers);
         return emitter;
     }
 
@@ -56,7 +70,7 @@ public final class FetchEventHub implements FetchEventPublisher {
         dispatch(() -> {
             for (Subscriber subscriber : subscribers) {
                 if (!subscriber.sendEvent(event.eventId(), EVENT_NAME, payload)) {
-                    removeSubscriber(subscriber.emitter);
+                    releaseSubscriber(subscriber.emitter);
                 }
             }
         });
@@ -70,7 +84,7 @@ public final class FetchEventHub implements FetchEventPublisher {
         dispatch(() -> {
             for (Subscriber subscriber : subscribers) {
                 if (!subscriber.sendComment("keep-alive")) {
-                    removeSubscriber(subscriber.emitter);
+                    releaseSubscriber(subscriber.emitter);
                 }
             }
         });
@@ -88,8 +102,10 @@ public final class FetchEventHub implements FetchEventPublisher {
         }
     }
 
-    private void removeSubscriber(SseEmitter emitter) {
-        subscribers.removeIf(subscriber -> subscriber.emitter == emitter);
+    private void releaseSubscriber(SseEmitter emitter) {
+        if (subscribers.removeIf(subscriber -> subscriber.emitter == emitter)) {
+            slots.release();
+        }
     }
 
     private String serialize(FetchCompletedPayload payload) {

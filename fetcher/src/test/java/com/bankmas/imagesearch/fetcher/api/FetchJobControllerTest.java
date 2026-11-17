@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.bankmas.imagesearch.fetcher.config.Json;
 import com.bankmas.imagesearch.fetcher.job.FetchJobService;
 import com.bankmas.imagesearch.fetcher.job.FetchJobStatus;
 import com.bankmas.imagesearch.fetcher.job.FetchJobView;
@@ -28,7 +29,7 @@ class FetchJobControllerTest {
 
     private final FetchJobService service = mock(FetchJobService.class);
     private final MockMvc mockMvc = MockMvcBuilders.standaloneSetup(new FetchJobController(service))
-            .setControllerAdvice(new ApiExceptionHandler())
+            .setControllerAdvice(new ApiExceptionHandler(Json.mapper()))
             .build();
 
     @Test

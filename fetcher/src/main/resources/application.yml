@@ -16,6 +16,8 @@ fetcher:
   http:
     # Connection timeout for both Openverse calls and image downloads.
     connect-timeout: ${FETCHER_HTTP_CONNECT_TIMEOUT:10s}
+    # Redirects are followed through the same guarded DNS resolver and capped here.
+    max-redirects: ${FETCHER_HTTP_MAX_REDIRECTS:5}
   openverse:
     base-url: ${OPENVERSE_BASE_URL:https://api.openverse.org}
     # Optional API credentials. When both are empty the client calls the
@@ -54,6 +56,8 @@ fetcher:
     # SSE connection lifetime; clients reconnect after this timeout.
     timeout: ${FETCHER_SSE_TIMEOUT:30m}
     heartbeat-interval-ms: ${FETCHER_SSE_HEARTBEAT_INTERVAL_MS:15000}
+    # Bounded subscriber count; excess connections receive HTTP 429.
+    max-subscribers: ${FETCHER_SSE_MAX_SUBSCRIBERS:8}
   storage:
     endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
     region: ${MINIO_REGION:us-east-1}

@@ -72,6 +72,7 @@ AWS credential chain is used instead.
 | `OPENVERSE_MIN_REQUEST_INTERVAL` | `250ms` | Client-side pacing between Openverse calls |
 | `OPENVERSE_LICENSE_TYPE` | empty | Optional Openverse `license` filter |
 | `FETCHER_HTTP_CONNECT_TIMEOUT` | `10s` | TCP connect timeout |
+| `FETCHER_HTTP_MAX_REDIRECTS` | `5` | Maximum redirects followed per request |
 | `FETCHER_DOWNLOAD_TIMEOUT` | `20s` | Per-attempt image download timeout |
 | `FETCHER_DOWNLOAD_MAX_BYTES` | `8388608` | Max image size |
 | `FETCHER_DOWNLOAD_MAX_PIXELS` | `25000000` | Max decoded pixel count (decompression-bomb guard) |
@@ -88,6 +89,7 @@ AWS credential chain is used instead.
 | `FETCHER_MANIFEST_SAVE_ATTEMPTS` | `2` | Manifest write attempts |
 | `FETCHER_SSE_TIMEOUT` | `30m` | SSE connection lifetime before reconnect |
 | `FETCHER_SSE_HEARTBEAT_INTERVAL_MS` | `15000` | Heartbeat comment interval |
+| `FETCHER_SSE_MAX_SUBSCRIBERS` | `8` | Maximum concurrent SSE connections (`429` above this) |
 | `MINIO_ENDPOINT` | `http://localhost:9000` | S3-compatible endpoint |
 | `MINIO_REGION` | `us-east-1` | Signing region |
 | `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | empty | Static credentials (optional) |
@@ -127,6 +129,12 @@ curl -N http://localhost:8081/api/v1/events/fetch
 # event:fetch.completed
 # data:{"jobId":"fetch-20261116-001","manifestKey":"jobs/bank-mas/fetch-20261116-001/fetch-manifest.json"}
 ```
+
+At most `FETCHER_SSE_MAX_SUBSCRIBERS` connections are accepted. Additional
+connections receive `429 Too Many Requests` with a `Retry-After: 30` header and a
+JSON body (`{"code":"too_many_subscribers",...}`) even though SSE clients send
+`Accept: text/event-stream`. A slot is released when the client disconnects, the
+connection times out, or a send fails.
 
 Validation limits: 1–50 classes, each 1–64 characters of letters/digits/spaces/
 apostrophes/hyphens, no duplicates after trimming and lowercasing; `imagesPerClass`
@@ -168,12 +176,19 @@ storage is not uploaded again.
   when configured, are exchanged for a cached OAuth2 bearer token; tokens and
   credentials are never logged.
 - Downloads must return HTTP 200 with an image content type when the host declares
-  one, must decode as JPEG/PNG/GIF/BMP within the byte and pixel limits, and are
-  rejected (best effort) when the URL or a redirect target resolves to a
-  loopback/private/link-local/CGNAT host.
+  one and must decode as JPEG/PNG/GIF/BMP within the byte and pixel limits.
+- Outbound connections are hardened in the HTTP layer, not just by a pre-check:
+  the Apache HttpClient 5 transport installs a `DnsResolver` that validates every
+  resolution through the same `UrlSafety` policy before returning addresses, so the
+  addresses that are checked are the addresses used for the socket. A hostname
+  rebound to a loopback/private/link-local/CGNAT address after the pre-check is
+  still rejected before any connection is opened. Redirects are followed only for
+  HTTP(S) targets with a host and at most `FETCHER_HTTP_MAX_REDIRECTS` times; every
+  redirect hop is resolved and validated again by the same resolver. Non-HTTP(S)
+  redirect targets are not followed and surface as a non-200 download failure.
 - SSE events are queued on a dedicated dispatcher, so a slow client cannot block
   the job; failing subscribers are dropped and heartbeats keep idle connections
-  alive.
+  alive. The subscriber count is bounded by a semaphore (see `FETCHER_SSE_MAX_SUBSCRIBERS`).
 
 ## Limitations
 
@@ -189,9 +204,19 @@ storage is not uploaded again.
   from multiple jobs.
 - Only formats supported by `javax.imageio` are accepted. WebP, SVG, and TIFF are
   rejected as `unsupported_format`, so some Openverse results are skipped.
-- The private-network guard is best effort: DNS is resolved for the check while
-  the HTTP client resolves again, so a DNS-rebinding race is theoretically possible.
-  Set `FETCHER_ALLOW_PRIVATE_ADDRESSES=true` only for local testing.
+- The private-network guard is enforced by the transport's DNS resolver at
+  connect time; there is no separate resolve-then-connect gap. Residual behavior:
+  the JVM/OS resolver cache can return an answer without a fresh query until its
+  TTL expires, but the cached answer was validated before use. The client does not
+  use system HTTP proxy settings; if an outbound proxy is introduced later the
+  guard must be re-reviewed (a proxy would resolve the target itself).
+  `FETCHER_ALLOW_PRIVATE_ADDRESSES=true` disables the guard entirely and is meant
+  only for local testing; it also affects the Openverse base URL because the guard
+  is applied by the shared transport.
+- The SSE subscriber limit is per process. Excess clients get `429` and should
+  reconnect after the `Retry-After` delay; with multiple fetcher instances the
+  effective limit is per instance, and only the instance that ran the job publishes
+  its event.
 - The bucket must be creatable by the configured credentials; otherwise the first
   upload fails and the job ends `FAILED`.
 - No authentication or rate limiting on the fetch endpoints: this service is meant

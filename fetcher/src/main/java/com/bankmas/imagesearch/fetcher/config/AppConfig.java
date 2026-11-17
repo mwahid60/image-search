@@ -4,8 +4,8 @@ import com.bankmas.imagesearch.fetcher.download.HttpImageDownloader;
 import com.bankmas.imagesearch.fetcher.download.ImageDownloader;
 import com.bankmas.imagesearch.fetcher.download.UrlSafety;
 import com.bankmas.imagesearch.fetcher.events.FetchEventHub;
+import com.bankmas.imagesearch.fetcher.http.ApacheHttpTransport;
 import com.bankmas.imagesearch.fetcher.http.HttpTransport;
-import com.bankmas.imagesearch.fetcher.http.JdkHttpTransport;
 import com.bankmas.imagesearch.fetcher.job.ImageFetchCoordinator;
 import com.bankmas.imagesearch.fetcher.job.InMemoryJobRegistry;
 import com.bankmas.imagesearch.fetcher.job.JobIdGenerator;
@@ -72,9 +72,15 @@ public class AppConfig {
         return Json.prettyMapper();
     }
 
+    @Bean(destroyMethod = "close")
+    public HttpTransport httpTransport(FetcherProperties properties, UrlSafety urlSafety) {
+        return new ApacheHttpTransport(
+                properties.http().connectTimeout(), urlSafety, properties.http().maxRedirects());
+    }
+
     @Bean
-    public HttpTransport httpTransport(FetcherProperties properties) {
-        return new JdkHttpTransport(properties.http().connectTimeout());
+    public UrlSafety urlSafety(FetcherProperties properties) {
+        return UrlSafety.systemDefault(properties.download().allowPrivateAddresses());
     }
 
     @Bean
@@ -108,7 +114,7 @@ public class AppConfig {
 
     @Bean
     public ImageDownloader imageDownloader(
-            HttpTransport transport, FetcherProperties properties, Sleeper sleeper) {
+            HttpTransport transport, FetcherProperties properties, UrlSafety urlSafety, Sleeper sleeper) {
         FetcherProperties.Retry retry = properties.retry();
         RetryPolicy retryPolicy = new RetryPolicy(
                 retry.downloadMaxAttempts(),
@@ -118,7 +124,6 @@ public class AppConfig {
                 retry.maxRetryAfter(),
                 new Random(),
                 sleeper);
-        UrlSafety urlSafety = UrlSafety.systemDefault(properties.download().allowPrivateAddresses());
         return new HttpImageDownloader(transport, properties.download(), retryPolicy, urlSafety);
     }
 
@@ -203,7 +208,11 @@ public class AppConfig {
             ObjectMapper objectMapper,
             @Qualifier("sseDispatcher") ExecutorService sseDispatcher,
             FetcherProperties properties) {
-        return new FetchEventHub(objectMapper, sseDispatcher, properties.events().timeout());
+        return new FetchEventHub(
+                objectMapper,
+                sseDispatcher,
+                properties.events().timeout(),
+                properties.events().maxSubscribers());
     }
 
     @Bean

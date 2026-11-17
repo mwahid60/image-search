@@ -65,12 +65,12 @@ public final class TestProperties {
             FetcherProperties.Storage storage,
             FetcherProperties.Retry retry) {
         return new FetcherProperties(
-                new FetcherProperties.Http(Duration.ofSeconds(2)),
+                new FetcherProperties.Http(Duration.ofSeconds(2), 5),
                 openverse,
                 download,
                 retry,
                 new FetcherProperties.Jobs(1, 4, 20, 2, Duration.ofMillis(10)),
-                new FetcherProperties.Events(Duration.ofMinutes(1), 1_000L),
+                new FetcherProperties.Events(Duration.ofMinutes(1), 1_000L, 8),
                 storage);
     }
 }

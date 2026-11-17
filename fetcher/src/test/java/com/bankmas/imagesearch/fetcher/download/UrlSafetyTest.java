@@ -72,6 +72,53 @@ class UrlSafetyTest {
     }
 
     @Test
+    void resolveForConnectionRejectsPrivateAddressesBeforeAnyConnection() throws UnknownHostException {
+        UrlSafety safety = new UrlSafety(false, host -> new InetAddress[] {InetAddress.getByAddress(new byte[] {10, 1, 2, 3})});
+
+        assertThatThrownBy(() -> safety.resolveForConnection("images.test"))
+                .isInstanceOf(BlockedHostException.class)
+                .hasMessageContaining("non-public address");
+    }
+
+    @Test
+    void resolveForConnectionRejectsMixedResultsWhenAnyAddressIsPrivate() throws Exception {
+        InetAddress publicAddress = InetAddress.getByName("93.184.216.34");
+        InetAddress privateAddress = InetAddress.getByAddress(new byte[] {(byte) 192, (byte) 168, 1, 10});
+        UrlSafety safety = new UrlSafety(false, host -> new InetAddress[] {publicAddress, privateAddress});
+
+        assertThatThrownBy(() -> safety.resolveForConnection("rebind.example.test"))
+                .isInstanceOf(BlockedHostException.class);
+    }
+
+    @Test
+    void resolveForConnectionReturnsTheAddressesThatWereValidated() throws Exception {
+        InetAddress publicAddress = InetAddress.getByName("93.184.216.34");
+        UrlSafety safety = new UrlSafety(false, host -> new InetAddress[] {publicAddress});
+
+        assertThat(safety.resolveForConnection("cdn.example.test")).containsExactly(publicAddress);
+    }
+
+    @Test
+    void resolveForConnectionRejectsLocalhostNamesWithoutDnsLookup() {
+        UrlSafety safety = new UrlSafety(false, host -> {
+            throw new AssertionError("resolver must not run for blocked names");
+        });
+
+        assertThatThrownBy(() -> safety.resolveForConnection("localhost"))
+                .isInstanceOf(BlockedHostException.class);
+        assertThatThrownBy(() -> safety.resolveForConnection("metadata.google.internal"))
+                .isInstanceOf(BlockedHostException.class);
+    }
+
+    @Test
+    void resolveForConnectionAllowsPrivateAddressesWhenExplicitlyConfigured() throws Exception {
+        InetAddress loopback = InetAddress.getByName("127.0.0.1");
+        UrlSafety safety = new UrlSafety(true, host -> new InetAddress[] {loopback});
+
+        assertThat(safety.resolveForConnection("local.test")).containsExactly(loopback);
+    }
+
+    @Test
     void canBeConfiguredToAllowPrivateAddressesForLocalDevelopment() {
         UrlSafety safety = new UrlSafety(true, host -> new InetAddress[] {InetAddress.getByName("127.0.0.1")});
 
