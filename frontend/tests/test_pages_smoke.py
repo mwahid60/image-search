@@ -13,6 +13,7 @@ FRONTEND_DIR = Path(__file__).resolve().parents[1]
 @pytest.fixture(autouse=True)
 def _api_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("API_BASE_URL", "http://localhost:8000")
+    monkeypatch.delenv("PUBLIC_API_BASE_URL", raising=False)
 
 
 def test_fetch_page_renders_initial_state() -> None:
@@ -84,6 +85,65 @@ render()
     assert "Skor kemiripan: 0.8123" in "\n".join(
         element.value for element in at.caption
     )
+
+
+def test_search_results_use_public_api_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("API_BASE_URL", "http://backend:8000")
+    monkeypatch.setenv("PUBLIC_API_BASE_URL", "https://public.example.com/")
+    script = """
+import streamlit as st
+
+from image_search.api_client import SearchResponse, SearchResultItem
+from image_search.views.search import render
+
+st.session_state["search_results"] = SearchResponse(
+    query="a dog playing in the snow",
+    results=(
+        SearchResultItem(image_id="abc", image_url="/api/v1/images/abc"),
+    ),
+)
+render()
+"""
+
+    at = AppTest.from_string(script, default_timeout=15)
+    at.run()
+
+    assert not at.exception
+    image_urls = [url for image in at.get("image") for url in image.value]
+    assert image_urls == ["https://public.example.com/api/v1/images/abc"]
+
+
+def test_search_rejects_absolute_internal_image_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("API_BASE_URL", "http://backend:8000")
+    monkeypatch.setenv("PUBLIC_API_BASE_URL", "http://127.0.0.1:8000")
+    script = """
+import streamlit as st
+
+from image_search.api_client import SearchResponse, SearchResultItem
+from image_search.views.search import render
+
+st.session_state["search_results"] = SearchResponse(
+    query="a dog playing in the snow",
+    results=(
+        SearchResultItem(
+            image_id="abc",
+            image_url="http://backend:8000/api/v1/images/abc",
+        ),
+    ),
+)
+render()
+"""
+
+    at = AppTest.from_string(script, default_timeout=15)
+    at.run()
+
+    assert not at.exception
+    assert at.get("image") == []
+    assert any("URL gambar yang tidak valid" in item.value for item in at.warning)
 
 
 def test_app_entrypoint_navigates_to_fetch_page() -> None:

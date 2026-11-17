@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 ENV_API_BASE_URL = "API_BASE_URL"
+ENV_PUBLIC_API_BASE_URL = "PUBLIC_API_BASE_URL"
 ENV_REQUEST_TIMEOUT = "API_TIMEOUT_SECONDS"
 ENV_SEARCH_TIMEOUT = "API_SEARCH_TIMEOUT_SECONDS"
 ENV_POLL_INTERVAL = "FRONTEND_POLL_INTERVAL_SECONDS"
@@ -36,23 +37,20 @@ class ConfigError(ValueError):
     """Raised when the environment contains unusable frontend configuration."""
 
 
-def normalize_base_url(raw: str) -> str:
+def normalize_base_url(raw: str, *, name: str = ENV_API_BASE_URL) -> str:
     """Validate a Python API base URL and strip any trailing slash."""
 
     value = (raw or "").strip()
     if not value:
-        raise ConfigError(f"{ENV_API_BASE_URL} tidak boleh kosong.")
+        raise ConfigError(f"{name} tidak boleh kosong.")
 
     parts = urlsplit(value)
     if parts.scheme not in {"http", "https"} or not parts.netloc:
         raise ConfigError(
-            f"{ENV_API_BASE_URL} harus berupa URL http(s) lengkap, contoh "
-            f"'{DEFAULT_API_BASE_URL}'."
+            f"{name} harus berupa URL http(s) lengkap, contoh '{DEFAULT_API_BASE_URL}'."
         )
     if parts.query or parts.fragment:
-        raise ConfigError(
-            f"{ENV_API_BASE_URL} tidak boleh mengandung query string atau fragment."
-        )
+        raise ConfigError(f"{name} tidak boleh mengandung query string atau fragment.")
 
     return value.rstrip("/")
 
@@ -104,6 +102,7 @@ class AppConfig:
     """Resolved runtime configuration for the frontend."""
 
     api_base_url: str
+    public_api_base_url: str
     request_timeout_seconds: float
     search_timeout_seconds: float
     poll_interval_seconds: float
@@ -114,10 +113,17 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     """Load and validate configuration from an environment mapping."""
 
     source = os.environ if env is None else env
+    api_base_url = normalize_base_url(
+        source.get(ENV_API_BASE_URL) or DEFAULT_API_BASE_URL
+    )
+    raw_public_base_url = (source.get(ENV_PUBLIC_API_BASE_URL) or "").strip()
+    public_api_base_url = normalize_base_url(
+        raw_public_base_url or api_base_url,
+        name=ENV_PUBLIC_API_BASE_URL,
+    )
     return AppConfig(
-        api_base_url=normalize_base_url(
-            source.get(ENV_API_BASE_URL) or DEFAULT_API_BASE_URL
-        ),
+        api_base_url=api_base_url,
+        public_api_base_url=public_api_base_url,
         request_timeout_seconds=_read_float(
             source,
             ENV_REQUEST_TIMEOUT,

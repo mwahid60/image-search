@@ -26,6 +26,7 @@ frontend/
 │       └── search.py
 ├── tests/
 │   ├── test_api_client.py
+│   ├── test_config.py
 │   ├── test_formatting.py
 │   ├── test_pages_smoke.py
 │   └── test_state.py
@@ -45,17 +46,31 @@ Konfigurasi lewat environment variable:
 
 | Variable | Default | Keterangan |
 |---|---|---|
-| `API_BASE_URL` | `http://localhost:8000` | Base URL Python FastAPI, wajib http/https |
+| `API_BASE_URL` | `http://localhost:8000` | Base URL Python FastAPI untuk request server-side dari Streamlit |
+| `PUBLIC_API_BASE_URL` | mengikuti `API_BASE_URL` | Base URL Python FastAPI yang dipakai browser untuk mengambil gambar hasil search |
 | `API_TIMEOUT_SECONDS` | `30` | Timeout fetch/status/ingest (detik) |
 | `API_SEARCH_TIMEOUT_SECONDS` | `60` | Timeout search; embedding teks di CPU bisa lebih lambat |
 | `FRONTEND_POLL_INTERVAL_SECONDS` | `3` | Jeda antar polling status |
 | `FRONTEND_MAX_AUTO_POLLS` | `150` | Batas polling otomatis per job (± 7 menit pada jeda 3 detik) |
 
-Contoh:
+Contoh lokal:
 
 ```bash
 API_BASE_URL=http://localhost:8000 uv run streamlit run app.py
 ```
+
+Contoh ala compose, saat Streamlit memanggil backend lewat nama service tetapi
+browser berjalan di host:
+
+```bash
+API_BASE_URL=http://backend:8000 \
+PUBLIC_API_BASE_URL=http://127.0.0.1:8000 \
+uv run streamlit run app.py
+```
+
+Jika `PUBLIC_API_BASE_URL` tidak diisi, nilainya mengikuti `API_BASE_URL`
+sehingga konfigurasi lama tetap berjalan. Keduanya divalidasi sebagai URL
+http(s) lengkap.
 
 Buka URL yang ditampilkan Streamlit (default `http://localhost:8501`).
 
@@ -73,6 +88,10 @@ Buka URL yang ditampilkan Streamlit (default `http://localhost:8501`).
   Status backend yang tidak dikenal ditampilkan apa adanya, bukan ditebak.
 - Jumlah downloaded/failedDownloads/indexed/duplicates hanya ditampilkan jika
   backend mengirimnya. Tidak ada progress atau statistik buatan.
+- `errors` dari backend boleh berupa string atau objek `IngestionError`
+  (`imageId`, `objectKey`, `stage`, `reason`). Objek diformat menjadi satu baris
+  yang memuat tahap, alasan, dan identifier bila tersedia; metadata evaluasi
+  tidak pernah ditampilkan.
 - **Retry Ingestion** memanggil `POST /api/v1/ingest/{jobId}` dan hanya muncul
   saat fetching sudah selesai dan ingestion tidak sedang berjalan.
 - Auto-refresh memakai `st.rerun()` dengan jeda dan batas polling. Polling
@@ -85,9 +104,12 @@ Buka URL yang ditampilkan Streamlit (default `http://localhost:8501`).
 - Kueri bahasa alami dikirim ke `POST /api/v1/search` dengan `topK` 1–50
   (default 12).
 - Image grid memakai `imageUrl` dari backend. URL relatif di-resolve terhadap
-  `API_BASE_URL`; URL absolut hanya diterima jika host-nya sama dengan API,
-  sehingga browser tidak mengambil gambar langsung dari MinIO/Openverse. URL
-  non-http(s) atau host lain tidak dirender.
+  `PUBLIC_API_BASE_URL`; URL absolut hanya diterima jika host-nya sama dengan
+  host publik tersebut, sehingga browser tidak mengambil gambar langsung dari
+  MinIO, Openverse, atau host internal seperti `backend:8000`. URL non-http(s)
+  atau host lain tidak dirender.
+- Backend tidak perlu mengubah bentuk `imageUrl`; cukup sediakan endpoint
+  gambar pada public API host yang sama.
 - Skor hanya ditampilkan jika backend mengirim `score` dan checkbox skor aktif.
 - Atribusi creator, license, dan source URL ditampilkan. Title, tags,
   `requestedClass`, dan `evaluation_metadata` tidak ditampilkan sebagai
@@ -100,7 +122,8 @@ Buka URL yang ditampilkan Streamlit (default `http://localhost:8501`).
 
 ```bash
 cd frontend
-uv run pytest
+uv run pytest -q
+uvx ruff check .
 uv run python -m compileall -q app.py image_search tests
 ```
 
@@ -109,9 +132,10 @@ Unit test memakai `httpx.MockTransport`; tidak memerlukan backend sungguhan.
 ## Keterbatasan
 
 - Gambar diambil browser langsung dari `imageUrl` backend yang sudah di-resolve.
-  Karena itu, `API_BASE_URL` harus dapat diakses dari browser, bukan hanya dari
-  container Streamlit. Untuk deployment jaringan internal, gunakan base URL
-  yang juga terjangkau browser atau tambahkan proxy gambar.
+  Karena itu, `PUBLIC_API_BASE_URL` harus dapat diakses dari browser. Di
+  compose, gunakan `API_BASE_URL` internal (mis. `http://backend:8000`) untuk
+  request Streamlit dan `PUBLIC_API_BASE_URL` yang terjangkau browser (mis.
+  `http://127.0.0.1:8000`) untuk gambar.
 - Auto-refresh bergantung pada `st.rerun()` + `time.sleep`, bukan SSE ke
   browser; setiap jeda memblokir script run singkat. Batas polling mencegah
   loop tanpa akhir.

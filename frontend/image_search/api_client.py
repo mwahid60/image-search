@@ -147,7 +147,41 @@ def _optional_count(data: Mapping[str, Any], key: str, path: str) -> int | None:
     return value
 
 
-def _optional_str_list(data: Mapping[str, Any], key: str, path: str) -> tuple[str, ...]:
+def _format_ingestion_error(data: Mapping[str, Any], path: str) -> str:
+    """Turn an IngestionError object into one human-readable line.
+
+    Only the ingestion fields are read. Textual evaluation metadata that may
+    travel with an error object is deliberately ignored and never rendered.
+    """
+
+    stage = _optional_str(data, "stage", path)
+    reason = _optional_str(data, "reason", path)
+    image_id = _optional_str(data, "imageId", path)
+    object_key = _optional_str(data, "objectKey", path)
+
+    identifiers: list[str] = []
+    if image_id:
+        identifiers.append(f"imageId={image_id}")
+    if object_key:
+        identifiers.append(f"objectKey={object_key}")
+
+    if stage and reason:
+        message = f"Gagal di tahap {stage}: {reason}"
+    elif stage:
+        message = f"Gagal di tahap {stage}"
+    elif reason:
+        message = f"Gagal: {reason}"
+    elif identifiers:
+        message = "Gagal memproses gambar"
+    else:
+        message = "Error ingestion tanpa detail"
+
+    if identifiers:
+        message += f" ({', '.join(identifiers)})"
+    return message
+
+
+def _error_list(data: Mapping[str, Any], key: str, path: str) -> tuple[str, ...]:
     value = data.get(key)
     if value is None:
         return ()
@@ -155,12 +189,19 @@ def _optional_str_list(data: Mapping[str, Any], key: str, path: str) -> tuple[st
         raise _malformed(path, f"field '{key}' harus berupa array")
 
     messages: list[str] = []
-    for item in value:
-        if not isinstance(item, str):
-            raise _malformed(path, f"setiap item '{key}' harus berupa string")
-        cleaned = item.strip()
-        if cleaned:
-            messages.append(cleaned)
+    for index, item in enumerate(value):
+        item_path = f"{path} {key}[{index}]"
+        if isinstance(item, str):
+            cleaned = item.strip()
+            if cleaned:
+                messages.append(cleaned)
+        elif isinstance(item, Mapping):
+            messages.append(_format_ingestion_error(item, item_path))
+        else:
+            raise _malformed(
+                item_path,
+                "setiap item harus berupa string atau objek IngestionError",
+            )
     return tuple(messages)
 
 
@@ -319,7 +360,7 @@ class ApiClient:
             failed_downloads=_optional_count(data, "failedDownloads", path),
             indexed=_optional_count(data, "indexed", path),
             duplicates=_optional_count(data, "duplicates", path),
-            errors=_optional_str_list(data, "errors", path),
+            errors=_error_list(data, "errors", path),
         )
 
     def retry_ingestion(self, job_id: str) -> IngestionRetry:

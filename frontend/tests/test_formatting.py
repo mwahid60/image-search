@@ -46,10 +46,29 @@ def test_resolve_media_url_rejects_other_hosts() -> None:
     assert resolve_media_url(BASE_URL, "https://cdn.example.com/image.jpg") is None
 
 
-def test_resolve_media_url_resolves_against_base_path() -> None:
+def test_resolve_media_url_resolves_against_public_base_path() -> None:
     assert (
         resolve_media_url("http://localhost:8000/gateway", "/api/v1/images/abc")
         == "http://localhost:8000/api/v1/images/abc"
+    )
+
+
+def test_resolve_media_url_uses_only_the_public_api_host() -> None:
+    public_base_url = "http://127.0.0.1:8000"
+
+    # Relative imageUrl from the backend resolves to the browser-facing host.
+    assert (
+        resolve_media_url(public_base_url, "/api/v1/images/abc")
+        == "http://127.0.0.1:8000/api/v1/images/abc"
+    )
+    # The internal server-side host is not the public host, so it is rejected.
+    assert (
+        resolve_media_url(public_base_url, "http://backend:8000/api/v1/images/abc")
+        is None
+    )
+    assert (
+        resolve_media_url(public_base_url, "http://127.0.0.1:8000/api/v1/images/abc")
+        == "http://127.0.0.1:8000/api/v1/images/abc"
     )
 
 

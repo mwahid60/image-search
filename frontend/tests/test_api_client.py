@@ -116,6 +116,102 @@ def test_failed_downloads_list_is_counted_not_rendered() -> None:
     assert status.failed_downloads == 2
 
 
+def test_get_fetch_job_formats_mixed_error_items() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "jobId": "fetch-4",
+                "fetchStatus": "COMPLETED",
+                "ingestionStatus": "INDEXED",
+                "errors": [
+                    "fetch manifest lama diabaikan",
+                    {
+                        "imageId": "abc",
+                        "objectKey": "images/bank-mas/abc.jpg",
+                        "stage": "embedding",
+                        "reason": "timeout",
+                    },
+                    {"imageId": "def", "stage": "minio"},
+                ],
+            },
+        )
+
+    with make_client(handler) as client:
+        status = client.get_fetch_job("fetch-4")
+
+    assert status.errors == (
+        "fetch manifest lama diabaikan",
+        (
+            "Gagal di tahap embedding: timeout "
+            "(imageId=abc, objectKey=images/bank-mas/abc.jpg)"
+        ),
+        "Gagal di tahap minio (imageId=def)",
+    )
+
+
+def test_get_fetch_job_formats_real_ingestion_error_payload() -> None:
+    """Parse the IngestionError objects the backend actually returns."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "jobId": "fetch-20261116-001",
+                "fetchStatus": "COMPLETED",
+                "ingestionStatus": "INDEXED",
+                "downloaded": 55,
+                "failedDownloads": 5,
+                "indexed": 54,
+                "duplicates": 1,
+                "errors": [
+                    {
+                        "imageId": "7ca92f",
+                        "objectKey": "images/bank-mas/7ca92f.jpg",
+                        "stage": "embedding",
+                        "reason": "llama.cpp returned HTTP 500",
+                        "evaluationMetadata": {
+                            "openverseId": "abc123",
+                            "requestedClass": "dog",
+                            "title": "A dog in the snow",
+                            "tags": ["dog", "snow"],
+                        },
+                    }
+                ],
+            },
+        )
+
+    with make_client(handler) as client:
+        status = client.get_fetch_job("fetch-20261116-001")
+
+    assert status.indexed == 54
+    assert len(status.errors) == 1
+    message = status.errors[0]
+    assert "embedding" in message
+    assert "llama.cpp returned HTTP 500" in message
+    assert "imageId=7ca92f" in message
+    assert "objectKey=images/bank-mas/7ca92f.jpg" in message
+    assert "evaluation" not in message.lower()
+    assert "A dog in the snow" not in message
+    assert "requestedClass" not in message
+    assert "tags" not in message
+
+
+def test_get_fetch_job_rejects_invalid_error_item() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "jobId": "fetch-5",
+                "fetchStatus": "COMPLETED",
+                "errors": [123],
+            },
+        )
+
+    with make_client(handler) as client, pytest.raises(MalformedResponseError):
+        client.get_fetch_job("fetch-5")
+
+
 def test_job_id_is_url_encoded() -> None:
     captured: dict[str, bytes] = {}
 

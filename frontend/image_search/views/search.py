@@ -116,7 +116,7 @@ def _render_results(config: AppConfig, show_scores: bool) -> None:
     columns = st.columns(3)
     for rank, item in enumerate(response.results, start=1):
         with columns[(rank - 1) % len(columns)]:
-            image_url = resolve_media_url(config.api_base_url, item.image_url)
+            image_url = resolve_media_url(config.public_api_base_url, item.image_url)
             if image_url:
                 st.image(
                     image_url,
