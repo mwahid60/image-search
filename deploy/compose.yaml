@@ -9,6 +9,10 @@
 #
 # Relative paths in this file resolve from this deploy/ directory.
 #
+# SECURITY: all published ports use ${BIND_ADDRESS:-127.0.0.1}. Keep the
+# default 127.0.0.1. This stack has no application authentication or TLS;
+# exposing these ports without an authenticating TLS reverse proxy is unsafe.
+#
 # Keep containers out of a single Podman pod so normal Compose service-name
 # DNS (minio, backend, ...) works and the stack behaves like Docker Compose.
 x-podman:
@@ -19,10 +23,12 @@ services:
     # MinIO no longer publishes anonymous community images on Docker Hub and
     # anonymous pulls from quay.io/minio/minio currently require authentication.
     # This pinned Bitnami legacy mirror is used so a fresh machine can pull
-    # without a registry login. See README.md ("MinIO image") before production.
+    # without a registry login. See README.md ("MinIO image") before any
+    # non-local deployment.
     image: docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5
     restart: unless-stopped
     environment:
+      # Replace these placeholders even for non-local use.
       MINIO_ROOT_USER: "${MINIO_ROOT_USER:-bankmas-local-admin}"
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-bankmas-local-password-change-me}"
       MINIO_DEFAULT_BUCKETS: "${MINIO_BUCKET:-bank-mas-image-search}"

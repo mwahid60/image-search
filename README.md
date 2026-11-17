@@ -4,7 +4,16 @@ Mini image search untuk take-home assignment Machine Learning Engineer Bank MAS.
 
 Dokumen kontrak dan keputusan desain ada di [docs/rencana-implementasi.md](docs/rencana-implementasi.md) dan [docs/api-spec.md](docs/api-spec.md). README ini fokus pada cara menjalankan stack secara lokal dan batasannya.
 
-> **Status jujur:** branch `feature/deployment-tooling` hanya berisi deployment, script operasional, dan dokumentasi. Source `fetcher/`, `backend/`, dan `frontend/` dikerjakan di branch lain dan belum tersedia saat Containerfile ini ditulis. Karena itu image belum pernah di-build dan stack belum pernah dijalankan end-to-end. Validasi yang benar-benar dilakukan tercatat di bagian [Validasi](#validasi). Tidak ada screenshot, jumlah gambar, metrik retrieval, atau klaim performa di README ini.
+> **Status jujur:** branch `feature/deployment-tooling` hanya berisi deployment, script operasional, dan dokumentasi. Source `fetcher/`, `backend/`, dan `frontend/` dikerjakan di branch lain dan belum tersedia saat Containerfile ini ditulis. Image backend dan frontend sudah pernah di-build dan di-smoke-boot secara terpisah, tetapi stack penuh belum dijalankan end-to-end. Validasi yang benar-benar dilakukan tercatat di bagian [Validasi](#validasi). Tidak ada screenshot, jumlah gambar, metrik retrieval, atau klaim performa di README ini.
+
+## Peringatan Keamanan: Bukan untuk Ekspos Publik
+
+> **Stack ini tidak memiliki authentication, authorization, TLS, atau rate limiting di service mana pun.** Port hanya relatif aman karena di-bind ke `127.0.0.1`.
+
+- **Jangan ubah `BIND_ADDRESS` dari `127.0.0.1`** dan jangan publish port `8000`, `8080`, `8081`, `8501`, `9000`, atau `9001` ke jaringan lokal bersama, VPS, atau internet tanpa reverse proxy yang menyediakan authentication dan TLS.
+- **Wajib ganti `MINIO_ROOT_USER` dan `MINIO_ROOT_PASSWORD` default**, bahkan untuk environment non-local. Nilai di `.env.example` adalah placeholder, bukan credentials yang aman.
+- `PUBLIC_API_BASE_URL` boleh diarahkan ke host lain **hanya setelah** reverse proxy yang menyediakan authentication dan TLS tersedia.
+- Stack ini adalah demo take-home, **bukan sistem production-ready**.
 
 ## Arsitektur
 
@@ -53,7 +62,7 @@ Prinsip utama:
 | `backend` | `deploy/Containerfile.backend` | `127.0.0.1:8000` | FastAPI + Milvus Lite |
 | `frontend` | `deploy/Containerfile.frontend` | `127.0.0.1:8501` | Streamlit, dua halaman |
 
-Semua port di-bind ke localhost secara default. Ubah `BIND_ADDRESS` di `.env` hanya jika memang perlu mengakses dari mesin lain.
+Semua port di-bind ke `127.0.0.1` secara default. **Jangan ubah `BIND_ADDRESS`** kecuali reverse proxy yang menyediakan authentication dan TLS sudah ada. Lihat [Peringatan Keamanan](#peringatan-keamanan-bukan-untuk-ekspos-publik).
 
 ## Prerequisites (fresh machine)
 
@@ -181,7 +190,7 @@ Buka <http://127.0.0.1:8501>. Ada dua halaman:
 
 MinIO console tersedia di <http://127.0.0.1:9001> dengan credentials dari `.env`.
 
-Frontend memisahkan dua URL: `API_BASE_URL=http://backend:8000` untuk panggilan HTTP server-side Streamlit di jaringan compose, dan `PUBLIC_API_BASE_URL=http://127.0.0.1:8000` untuk me-resolve `imageUrl` relatif agar dapat dibuka browser. Jika Streamlit dibuka dari mesin lain, ganti `PUBLIC_API_BASE_URL` ke host/IP yang dapat dijangkau browser tersebut (dan sesuaikan `BIND_ADDRESS` bila perlu); `API_BASE_URL` tetap memakai nama service internal.
+Frontend memisahkan dua URL: `API_BASE_URL=http://backend:8000` untuk panggilan HTTP server-side Streamlit di jaringan compose, dan `PUBLIC_API_BASE_URL=http://127.0.0.1:8000` untuk me-resolve `imageUrl` relatif agar dapat dibuka browser. `PUBLIC_API_BASE_URL` hanya boleh diarahkan ke host/IP remote **setelah** reverse proxy dengan authentication dan TLS tersedia; jangan mengubah `BIND_ADDRESS` atau mengekspos port backend untuk melayani browser remote. `API_BASE_URL` tetap memakai nama service internal.
 
 ## Alur fetch, SSE, dan ingestion
 
@@ -261,7 +270,7 @@ MinIO tidak lagi menyediakan image komunitas anonim di Docker Hub, dan `quay.io/
 - `docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5`
 - `docker.io/bitnamilegacy/minio-client:2025.7.21-debian-12-r3`
 
-Image ini tidak mendapat update vendor. Untuk production, ganti dengan image MinIO resmi yang tersedia di registry berlangganan/terautentikasi, lalu sesuaikan environment-nya. Fungsionalitas S3 yang dipakai proyek ini hanya bucket dan object biasa.
+Image ini tidak mendapat update vendor. Untuk deployment non-local, ganti dengan image MinIO resmi yang tersedia di registry berlangganan/terautentikasi setelah kontrol authentication dan TLS tersedia, lalu sesuaikan environment-nya. Fungsionalitas S3 yang dipakai proyek ini hanya bucket dan object biasa.
 
 ## Testing
 
@@ -326,7 +335,7 @@ Evaluasi retrieval juga belum dijalankan. `evaluation_metadata` hanya boleh diba
 - Image MinIO memakai mirror legacy; lihat bagian MinIO image.
 - Belum ada evaluasi retrieval, screenshot, atau hasil benchmark di repository ini.
 - Containerfile mengasumsikan struktur yang didokumentasikan: `fetcher/pom.xml` + `fetcher/src`, `backend/app/main.py` + `backend/pyproject.toml`, `frontend/app.py` + `frontend/image_search/`. Penyesuaian diperlukan jika implementasi memakai layout lain.
-- Untuk akses dari mesin lain, `PUBLIC_API_BASE_URL` harus menunjuk host/IP yang dapat dijangkau browser. Frontend harus benar-benar membaca `PUBLIC_API_BASE_URL`; jika belum, URL gambar akan memakai `API_BASE_URL` internal dan gagal di browser.
+- Tidak ada authentication atau TLS di stack ini. Jangan mengekspos port ke VPS/internet; gunakan reverse proxy yang menyediakan authentication dan TLS jika akses remote benar-benar diperlukan. `PUBLIC_API_BASE_URL` remote hanya boleh dipakai setelah kontrol tersebut tersedia. Frontend juga harus benar-benar membaca `PUBLIC_API_BASE_URL`.
 
 ## Pekerjaan lanjutan
 
