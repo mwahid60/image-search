@@ -107,16 +107,16 @@ curl -X POST http://localhost:8081/api/v1/fetch-jobs \
   -H 'Content-Type: application/json' \
   -d '{"classes": ["dog", "cat"], "imagesPerClass": 10}'
 # 202 Accepted
-# {"jobId":"fetch-20261116-001","status":"FETCHING"}
+# {"jobId":"fetch-20261116-101530-9f2c4e7a1b3d5068","status":"FETCHING"}
 ```
 
 Poll status:
 
 ```bash
-curl http://localhost:8081/api/v1/fetch-jobs/fetch-20261116-001
-# {"jobId":"fetch-20261116-001","fetchStatus":"COMPLETED","requestedClasses":["dog","cat"],
+curl http://localhost:8081/api/v1/fetch-jobs/fetch-20261116-101530-9f2c4e7a1b3d5068
+# {"jobId":"fetch-20261116-101530-9f2c4e7a1b3d5068","fetchStatus":"COMPLETED","requestedClasses":["dog","cat"],
 #  "imagesPerClass":10,"downloaded":18,"failedDownloads":2,"duplicates":0,
-#  "manifestKey":"jobs/bank-mas/fetch-20261116-001/fetch-manifest.json",
+#  "manifestKey":"jobs/bank-mas/fetch-20261116-101530-9f2c4e7a1b3d5068/fetch-manifest.json",
 #  "startedAt":"...","completedAt":"...","error":null}
 ```
 
@@ -125,9 +125,9 @@ Subscribe to completion events:
 ```bash
 curl -N http://localhost:8081/api/v1/events/fetch
 # :connected
-# id:fetch:fetch-20261116-001:completed
+# id:fetch:fetch-20261116-101530-9f2c4e7a1b3d5068:completed
 # event:fetch.completed
-# data:{"jobId":"fetch-20261116-001","manifestKey":"jobs/bank-mas/fetch-20261116-001/fetch-manifest.json"}
+# data:{"jobId":"fetch-20261116-101530-9f2c4e7a1b3d5068","manifestKey":"jobs/bank-mas/fetch-20261116-101530-9f2c4e7a1b3d5068/fetch-manifest.json"}
 ```
 
 At most `FETCHER_SSE_MAX_SUBSCRIBERS` connections are accepted. Additional
@@ -203,8 +203,14 @@ storage is not uploaded again.
 - Job status/history is in memory only. Restarting the service loses running and
   finished jobs from `GET /api/v1/fetch-jobs/{jobId}`; the manifest in MinIO is the
   durable record. The in-memory registry is bounded by `FETCHER_MAX_RETAINED_JOBS`.
-- Job ids are generated per process/day (`fetch-YYYYMMDD-NNN`); they are not
-  globally coordinated between multiple fetcher instances.
+- Job ids are `fetch-YYYYMMDD-HHmmss-<16 hex>` in UTC: a second-precision
+  timestamp plus 16 hex characters (64 random bits) from a UUID. A restarted
+  process or a second instance does not restart a counter, so it cannot overwrite
+  an existing manifest key; uniqueness relies on the timestamp plus the random
+  suffix rather than per-process state. The format matches the backend's
+  `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` rule. Job *status* is still per-instance
+  (see the previous point), so an old job's manifest remains readable even though
+  status lookups return `404` after a restart.
 - SSE delivery is not durable and there is no replay. Subscribers are per instance,
   so the Python consumer must use manifest reconciliation as documented in
   `docs/api-spec.md`. Single-instance deployment is assumed for the MVP.

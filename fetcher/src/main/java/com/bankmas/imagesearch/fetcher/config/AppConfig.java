@@ -170,8 +170,8 @@ public class AppConfig {
     }
 
     @Bean
-    public JobIdGenerator jobIdGenerator(Clock clock, InMemoryJobRegistry registry) {
-        return new JobIdGenerator(clock, registry);
+    public JobIdGenerator jobIdGenerator(Clock clock) {
+        return new JobIdGenerator(clock);
     }
 
     @Bean

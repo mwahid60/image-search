@@ -355,7 +355,7 @@ class FetchJobServiceTest {
                 new ImageFetchCoordinator(openverse, downloader, storage, properties);
         return new FetchJobService(
                 registry,
-                new JobIdGenerator(clock, registry),
+                new JobIdGenerator(clock),
                 executor,
                 coordinator,
                 manifestStore,

@@ -3,42 +3,53 @@ package com.bankmas.imagesearch.fetcher.job;
 import java.time.Clock;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Locale;
+import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
- * Human-readable job ids in the form {@code fetch-YYYYMMDD-NNN}.
+ * Human-readable job ids in the form {@code fetch-YYYYMMDD-HHmmss-<16 hex>}.
  *
- * <p>The sequence is per UTC day and per process. Collisions across restarts are
- * avoided by checking the registry when an id is generated.</p>
+ * <p>The timestamp is UTC with second precision and the suffix is derived from a
+ * random UUID. The random component makes ids unique across process restarts and
+ * across fetcher instances that create a job within the same second. This is
+ * required because the job id is part of the MinIO manifest key
+ * ({@code jobs/bank-mas/{jobId}/fetch-manifest.json}): a recycled per-process
+ * counter would overwrite a previous job's manifest after a restart.</p>
+ *
+ * <p>The id only contains characters allowed by the Python backend
+ * ({@code ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$}), keeps a reasonable length, and
+ * has no slash or {@code ..} segment, so {@code ObjectKeys.fetchManifest}
+ * accepts it.</p>
  */
 public final class JobIdGenerator {
 
-    private static final DateTimeFormatter DAY_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd").withZone(ZoneOffset.UTC);
+    static final String PREFIX = "fetch-";
+    static final DateTimeFormatter TIMESTAMP_FORMAT =
+            DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC);
+    static final int UNIQUE_SUFFIX_LENGTH = 16;
 
     private final Clock clock;
-    private final InMemoryJobRegistry registry;
-    private final AtomicInteger sequence = new AtomicInteger();
-    private String currentDay;
+    private final Supplier<UUID> uuidSupplier;
 
     public JobIdGenerator(Clock clock) {
-        this(clock, null);
+        this(clock, UUID::randomUUID);
     }
 
-    public JobIdGenerator(Clock clock, InMemoryJobRegistry registry) {
+    /** Visible for tests so a deterministic suffix can be asserted. */
+    JobIdGenerator(Clock clock, Supplier<UUID> uuidSupplier) {
         this.clock = clock;
-        this.registry = registry;
+        this.uuidSupplier = uuidSupplier;
     }
 
-    public synchronized String next() {
-        String day = DAY_FORMAT.format(clock.instant());
-        if (!day.equals(currentDay)) {
-            currentDay = day;
-            sequence.set(0);
+    public String next() {
+        String unique = uuidSupplier.get().toString().replace("-", "").toLowerCase(Locale.ROOT);
+        if (unique.length() < UNIQUE_SUFFIX_LENGTH) {
+            throw new IllegalStateException("UUID source returned an unexpected value");
         }
-        String candidate;
-        do {
-            candidate = "fetch-" + day + "-" + String.format("%03d", sequence.incrementAndGet());
-        } while (registry != null && registry.contains(candidate));
-        return candidate;
+        return PREFIX
+                + TIMESTAMP_FORMAT.format(clock.instant())
+                + "-"
+                + unique.substring(0, UNIQUE_SUFFIX_LENGTH);
     }
 }
