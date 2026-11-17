@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # --- Java fetcher (upstream fetch orchestration + SSE server) ---
-    java_base_url: str = "http://localhost:8080"
+    java_base_url: str = "http://localhost:8081"
     java_http_timeout_seconds: float = Field(default=10.0, gt=0)
     java_events_path: str = "/api/v1/events/fetch"
 
@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     ingestion_status_filename: str = INGESTION_STATUS_FILENAME
 
     # --- llama.cpp embeddings ---
-    llama_base_url: str = "http://localhost:8081"
+    llama_base_url: str = "http://localhost:8080"
     llama_model: str = "embeddinggemma-2"
     llama_timeout_seconds: float = Field(default=120.0, gt=0)
     embedding_dimension: int = Field(default=768, gt=0)

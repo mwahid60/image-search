@@ -72,24 +72,36 @@ class FetchStatusService:
         if ingestion is not None:
             errors.extend(ingestion.errors)
 
+        java_downloaded = java_job.downloaded if java_job else None
+        java_failed_downloads = java_job.failed_downloads if java_job else None
+        java_duplicates = java_job.duplicates if java_job else None
+        java_requested_classes = java_job.requested_classes if java_job else []
+        java_manifest_key = java_job.manifest_key if java_job else None
+        java_started_at = java_job.started_at if java_job else None
+        java_completed_at = java_job.completed_at if java_job else None
+
         return FetchJobStatus(
             job_id=job_id,
             fetch_status=fetch_status,
             ingestion_status=ingestion_state,
-            downloaded=len(manifest.images) if manifest else (java_job.downloaded or 0),
+            downloaded=len(manifest.images) if manifest else (java_downloaded or 0),
             failed_downloads=(
-                len(manifest.failed_downloads) if manifest else (java_job.failed_downloads or 0)
+                len(manifest.failed_downloads) if manifest else (java_failed_downloads or 0)
             ),
             indexed=ingestion.indexed if ingestion else 0,
-            duplicates=ingestion.duplicates if ingestion else 0,
+            duplicates=ingestion.duplicates if ingestion else (java_duplicates or 0),
             failed=ingestion.failed if ingestion else 0,
             errors=errors,
-            manifest_key=self._settings.manifest_key(job_id) if manifest else None,
+            manifest_key=(self._settings.manifest_key(job_id) if manifest else java_manifest_key),
             requested_classes=(
-                manifest.requested_classes if manifest else (java_job.requested_classes or [])
+                manifest.requested_classes if manifest else (java_requested_classes or [])
             ),
-            started_at=manifest.started_at if manifest else None,
-            completed_at=(manifest.completed_at or ingestion.completed_at) if manifest else None,
+            started_at=((manifest.started_at if manifest else None) or java_started_at),
+            completed_at=(
+                (manifest.completed_at if manifest else None)
+                or (ingestion.completed_at if ingestion else None)
+                or java_completed_at
+            ),
             warnings=warnings,
         )
 
@@ -125,8 +137,8 @@ class FetchStatusService:
 
     @staticmethod
     def _fetch_status(java_job: JavaFetchJob | None, manifest: FetchManifest | None) -> str:
-        if java_job is not None and java_job.status:
-            return java_job.status
+        if java_job is not None and java_job.fetch_status:
+            return java_job.fetch_status
         if manifest is not None:
             return manifest.status
         return "UNKNOWN"

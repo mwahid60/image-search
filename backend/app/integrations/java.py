@@ -28,10 +28,16 @@ class JavaFetchJob(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
 
     job_id: str | None = None
-    status: str | None = None
+    # Java FetchJobView exposes `fetchStatus`, not `status`.
+    fetch_status: str | None = None
     requested_classes: list[str] = Field(default_factory=list)
+    images_per_class: int | None = None
     downloaded: int | None = None
     failed_downloads: int | None = None
+    duplicates: int | None = None
+    manifest_key: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
     error: str | None = None
 
 

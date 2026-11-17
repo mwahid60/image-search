@@ -296,10 +296,16 @@ class MutableClock:
 def java_status(job_id: str = "fetch-test-001", status: str = "COMPLETED") -> JavaFetchJob:
     return JavaFetchJob(
         jobId=job_id,
-        status=status,
+        fetchStatus=status,
         requestedClasses=["dog", "cat"],
+        imagesPerClass=2,
         downloaded=1,
         failedDownloads=0,
+        duplicates=0,
+        manifestKey=None,
+        startedAt="2026-11-16T11:00:00Z",
+        completedAt=None,
+        error=None,
     )
 
 

@@ -6,6 +6,7 @@ import json
 
 from app.container import AppContainer
 from app.errors import EmbeddingError, UpstreamError
+from app.integrations.java import JavaFetchJob
 from app.main import create_app
 from app.models.ingestion import IngestionError, IngestionState, IngestionStatus
 from app.models.records import ImageVectorRecord
@@ -25,6 +26,7 @@ from tests.support import (
     sha,
     upstream_rejected,
 )
+from tests.test_java_contract import JAVA_FETCH_JOB_PAYLOAD
 
 JOB = "fetch-test-001"
 
@@ -376,3 +378,21 @@ def test_image_endpoint_reports_missing_object() -> None:
         response = client.get(f"/api/v1/images/{digest}")
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "IMAGE_OBJECT_NOT_FOUND"
+
+
+def test_aggregated_status_reports_fetching_before_manifest_exists() -> None:
+    app, _, java, *_ = build()
+    java.status_job = JavaFetchJob.model_validate(JAVA_FETCH_JOB_PAYLOAD)
+    with TestClient(app) as client:
+        response = client.get("/api/v1/fetch-jobs/fetch-20261116-001")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["fetchStatus"] == "FETCHING"
+    assert body["ingestionStatus"] == "UNKNOWN"
+    assert body["downloaded"] == 0
+    assert body["failedDownloads"] == 0
+    assert body["duplicates"] == 0
+    assert body["manifestKey"] is None
+    assert body["requestedClasses"] == ["dog"]
+    assert body["startedAt"] == "2026-11-16T11:00:00Z"
+    assert body["completedAt"] is None

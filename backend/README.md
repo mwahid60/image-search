@@ -80,7 +80,7 @@ local-development values; credentials have **no defaults**.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `JAVA_BASE_URL` | `http://localhost:8080` | Java fetcher base URL |
+| `JAVA_BASE_URL` | `http://localhost:8081` | Java fetcher base URL |
 | `JAVA_HTTP_TIMEOUT_SECONDS` | `10` | Java proxy/status timeout |
 | `JAVA_EVENTS_PATH` | `/api/v1/events/fetch` | SSE endpoint |
 | `SSE_ENABLED` | `true` | Must stay `true` in normal operation |
@@ -94,7 +94,7 @@ local-development values; credentials have **no defaults**.
 | `MINIO_ENSURE_BUCKET` | `true` | Create bucket at startup if missing |
 | `IMAGE_PREFIX` | `images/bank-mas/` | Required image object prefix |
 | `JOBS_PREFIX` | `jobs/bank-mas/` | Required job object prefix |
-| `LLAMA_BASE_URL` | `http://localhost:8081` | llama.cpp server |
+| `LLAMA_BASE_URL` | `http://localhost:8080` | llama.cpp server |
 | `LLAMA_MODEL` | `embeddinggemma-2` | `model` field in embeddings request |
 | `LLAMA_TIMEOUT_SECONDS` | `120` | Embedding timeout |
 | `EMBEDDING_DIMENSION` | `768` | Validated for every vector |
