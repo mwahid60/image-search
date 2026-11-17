@@ -104,7 +104,8 @@ local-development values; credentials have **no defaults**.
 | `MILVUS_COLLECTION` | `image_embeddings` | Collection name |
 | `SEARCH_DEFAULT_TOP_K` / `SEARCH_MAX_TOP_K` | `10` / `50` | Search limits |
 | `INGEST_BATCH_SIZE` | `4` | Images per embedding/upsert batch |
-| `INGEST_MAX_IMAGE_BYTES` | `15728640` | Per-image size guard |
+| `INGEST_MAX_IMAGE_BYTES` | `15728640` | Per-image file size guard |
+| `INGEST_MAX_IMAGE_PIXELS` | `25000000` | Per-image pixel guard (checked before full decode) |
 | `RECONCILIATION_ENABLED` | `true` | Periodic fallback scan |
 | `RECONCILIATION_ON_STARTUP` | `true` | Startup fallback scan |
 | `RECONCILIATION_INTERVAL_SECONDS` | `300` | Periodic interval |

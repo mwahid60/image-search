@@ -217,3 +217,17 @@ async def test_persisted_status_can_be_read_back() -> None:
     assert persisted is not None
     assert persisted.status == IngestionState.INDEXED
     assert persisted.indexed == 1
+
+
+async def test_configured_pixel_limit_fails_ingestion() -> None:
+    data = png_bytes("teal", size=(16, 12))  # 192 pixels
+    pipeline, _, embeddings, vectors = build_pipeline(
+        [image_entry(data)], settings=make_settings(ingest_max_image_pixels=100)
+    )
+    status = await pipeline.ingest_job("fetch-test-001")
+
+    assert status.status == IngestionState.FAILED
+    assert status.errors[0].stage == "validate"
+    assert "pixel count 192" in status.errors[0].reason
+    assert embeddings.image_calls == []
+    assert vectors.records == {}

@@ -292,7 +292,7 @@ class IngestionPipeline:
                 f"image exceeds max size of {self._settings.ingest_max_image_bytes} bytes",
             )
         try:
-            info = inspect_image(data)
+            info = inspect_image(data, max_pixels=self._settings.ingest_max_image_pixels)
         except ImageValidationError as exc:
             raise _ImageFailure("validate", str(exc)) from exc
 

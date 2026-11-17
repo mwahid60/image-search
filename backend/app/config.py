@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     # --- Ingestion ---
     ingest_batch_size: int = Field(default=4, ge=1, le=16)
     ingest_max_image_bytes: int = Field(default=15 * 1024 * 1024, gt=0)
+    ingest_max_image_pixels: int = Field(default=25_000_000, gt=0)
 
     # --- Reconciliation ---
     reconciliation_enabled: bool = True
