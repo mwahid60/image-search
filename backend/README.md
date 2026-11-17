@@ -99,7 +99,8 @@ local-development values; credentials have **no defaults**.
 | `LLAMA_TIMEOUT_SECONDS` | `120` | Embedding timeout |
 | `EMBEDDING_DIMENSION` | `768` | Validated for every vector |
 | `QUERY_PROMPT_PREFIX` | `task: search result \| query: ` | EmbeddingGemma query task prefix |
-| `MILVUS_URI` | `data/milvus.db` | Milvus Lite database path (or remote URI) |
+| `MILVUS_DB_PATH` | `data/milvus.db` | Milvus Lite database file path (`/data/` is git-ignored) |
+| `MILVUS_TOKEN` | unset | Only for a Milvus server that requires authentication; leave unset for Lite |
 | `MILVUS_COLLECTION` | `image_embeddings` | Collection name |
 | `SEARCH_DEFAULT_TOP_K` / `SEARCH_MAX_TOP_K` | `10` / `50` | Search limits |
 | `INGEST_BATCH_SIZE` | `4` | Images per embedding/upsert batch |
@@ -111,6 +112,10 @@ local-development values; credentials have **no defaults**.
 | `MAX_CLASSES_PER_REQUEST` / `MAX_IMAGES_PER_CLASS` | `50` / `50` | Proxy validation |
 
 `backend/.env.example` lists the same keys.
+
+Milvus configuration is intentionally split: `MILVUS_DB_PATH` points to the local
+Milvus Lite database file, while `MILVUS_URI` is left to pymilvus and is only valid
+for an http(s) Milvus server. The backend never reads or clears `MILVUS_URI`.
 
 ## Running
 

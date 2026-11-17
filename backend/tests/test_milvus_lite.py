@@ -36,7 +36,7 @@ def _record(image_id: str, vector: list[float], **overrides) -> ImageVectorRecor
 async def test_milvus_lite_upsert_search_and_idempotency(tmp_path) -> None:
     pytest.importorskip("pymilvus")
     settings = make_settings(
-        milvus_uri=str(tmp_path / "milvus.db"),
+        milvus_db_path=str(tmp_path / "milvus.db"),
         milvus_collection=f"image_embeddings_{uuid.uuid4().hex[:8]}",
     )
     store = MilvusVectorStore(settings)

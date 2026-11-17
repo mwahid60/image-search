@@ -38,7 +38,7 @@ def create_app(
             "Starting %s %s (milvus=%s, sse=%s, reconciliation=%s)",
             settings.app_name,
             settings.app_version,
-            settings.milvus_uri,
+            settings.milvus_db_path,
             settings.sse_enabled,
             settings.reconciliation_enabled,
         )

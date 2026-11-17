@@ -69,7 +69,9 @@ class Settings(BaseSettings):
     query_prompt_prefix: str = "task: search result | query: "
 
     # --- Milvus ---
-    milvus_uri: str = "data/milvus.db"
+    # Explicit Milvus Lite database path. Kept separate from MILVUS_URI because
+    # pymilvus reads MILVUS_URI itself and expects an http(s) server URI there.
+    milvus_db_path: str = "data/milvus.db"
     milvus_token: str | None = None
     milvus_collection: str = "image_embeddings"
     milvus_metric_type: str = "COSINE"
@@ -116,6 +118,14 @@ class Settings(BaseSettings):
         value = value.strip()
         if not value.startswith("/"):
             value = f"/{value}"
+        return value
+
+    @field_validator("milvus_db_path")
+    @classmethod
+    def _validate_milvus_db_path(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("milvus_db_path must not be empty")
         return value
 
     @field_validator(

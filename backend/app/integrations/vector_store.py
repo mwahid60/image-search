@@ -69,7 +69,7 @@ class MilvusVectorStore:
         if self._client is None:
             from pymilvus import MilvusClient
 
-            kwargs: dict[str, Any] = {"uri": self._settings.milvus_uri}
+            kwargs: dict[str, Any] = {"uri": self._settings.milvus_db_path}
             if self._settings.milvus_token:
                 kwargs["token"] = self._settings.milvus_token
             self._client = MilvusClient(**kwargs)

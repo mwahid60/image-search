@@ -32,7 +32,7 @@ def make_settings(**overrides: Any) -> Settings:
         "minio_endpoint": "minio.test:9000",
         "minio_access_key": "test-access",
         "minio_secret_key": "test-secret",
-        "milvus_uri": "data/test-milvus.db",
+        "milvus_db_path": "data/test-milvus.db",
         "embedding_dimension": 768,
     }
     values.update(overrides)
