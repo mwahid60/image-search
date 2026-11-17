@@ -1,0 +1,246 @@
+# Local deployment for Bank MAS Image Search.
+#
+# Run from the repository root:
+#   podman compose --env-file .env -f deploy/compose.yaml config
+#   podman compose --env-file .env -f deploy/compose.yaml up --build -d
+#
+# Milvus Lite is embedded in the Python backend (no Milvus/etcd/MinIO
+# vector-database stack, no PostgreSQL, Redis, or RabbitMQ).
+#
+# Relative paths in this file resolve from this deploy/ directory.
+#
+# Keep containers out of a single Podman pod so normal Compose service-name
+# DNS (minio, backend, ...) works and the stack behaves like Docker Compose.
+x-podman:
+  in_pod: false
+
+services:
+  minio:
+    # MinIO no longer publishes anonymous community images on Docker Hub and
+    # anonymous pulls from quay.io/minio/minio currently require authentication.
+    # This pinned Bitnami legacy mirror is used so a fresh machine can pull
+    # without a registry login. See README.md ("MinIO image") before production.
+    image: docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-bankmas-local-admin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-bankmas-local-password-change-me}"
+      MINIO_DEFAULT_BUCKETS: "${MINIO_BUCKET:-bank-mas-image-search}"
+      MINIO_BROWSER: "on"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      - "${BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/bitnami/minio/data
+
+  # Idempotent bucket bootstrap. The MinIO server also creates the bucket from
+  # MINIO_DEFAULT_BUCKETS; this container is an explicit, retrying safety net.
+  minio-init:
+    image: docker.io/bitnamilegacy/minio-client:2025.7.21-debian-12-r3
+    restart: "no"
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-bankmas-local-admin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-bankmas-local-password-change-me}"
+      MINIO_BUCKET: "${MINIO_BUCKET:-bank-mas-image-search}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        export HOME=/tmp
+        export MC_CONFIG_DIR=/tmp/.mc
+        until mc alias set local "http://minio:9000" "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+          echo "minio-init: waiting for MinIO at http://minio:9000 ..."
+          sleep 2
+        done
+        mc mb --ignore-existing "local/$$MINIO_BUCKET"
+        mc anonymous set none "local/$$MINIO_BUCKET" >/dev/null 2>&1 || true
+        echo "minio-init: bucket '$$MINIO_BUCKET' is ready"
+
+  llama-embeddings:
+    # Pin is intentional: EmbeddingGemma 2 needs a llama.cpp build with
+    # multimodal embeddings support. Tag b12429 resolved to
+    # sha256:7751a6c0dc3d019c231d42678abbb0fac1a13a24c17c956109ed27533139f280
+    # when this file was written. Re-verify with scripts/smoke_test_embeddings.py
+    # after changing this tag. See README.md ("llama.cpp image").
+    image: "${LLAMA_CPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b12429}"
+    restart: unless-stopped
+    command:
+      - "--model"
+      - "/models/${MODEL_FILE:-embeddinggemma-2-UD-Q4_K_XL.gguf}"
+      - "--mmproj"
+      - "/models/${MMPROJ_FILE:-mmproj-Q8_0.gguf}"
+      - "--alias"
+      - "${LLAMA_MODEL_ALIAS:-embeddinggemma-2}"
+      - "--embeddings"
+      - "--pooling"
+      - "mean"
+      - "--ctx-size"
+      - "${LLAMA_CTX_SIZE:-8192}"
+      - "--batch-size"
+      - "${LLAMA_BATCH_SIZE:-8192}"
+      - "--ubatch-size"
+      - "${LLAMA_UBATCH_SIZE:-8192}"
+      - "--parallel"
+      - "1"
+      - "--threads"
+      - "${LLAMA_THREADS:-4}"
+      - "--image-min-tokens"
+      - "${LLAMA_IMAGE_MIN_TOKENS:-280}"
+      - "--image-max-tokens"
+      - "${LLAMA_IMAGE_MAX_TOKENS:-280}"
+      - "--n-gpu-layers"
+      - "0"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--no-webui"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${LLAMA_PORT:-8080}:8080"
+    volumes:
+      # GGUF files stay on the host and are never committed. On a Linux host
+      # with SELinux, append :z to this mount if reading fails.
+      - "${MODELS_DIR:-../models}:/models:ro"
+    healthcheck:
+      test: "curl -fsS http://127.0.0.1:8080/health"
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 180s
+
+  fetcher:
+    build:
+      context: ../fetcher
+      dockerfile: ../deploy/Containerfile.fetcher
+    restart: unless-stopped
+    depends_on:
+      - minio
+      - minio-init
+    environment:
+      FETCHER_PORT: "8081"
+      MINIO_ENDPOINT: "${MINIO_ENDPOINT:-http://minio:9000}"
+      MINIO_REGION: "${MINIO_REGION:-us-east-1}"
+      MINIO_ACCESS_KEY: "${MINIO_ROOT_USER:-bankmas-local-admin}"
+      MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-bankmas-local-password-change-me}"
+      MINIO_BUCKET: "${MINIO_BUCKET:-bank-mas-image-search}"
+      MINIO_PATH_STYLE_ACCESS: "true"
+      MINIO_IMAGES_PREFIX: "${MINIO_IMAGES_PREFIX:-images/bank-mas/}"
+      MINIO_JOBS_PREFIX: "${MINIO_JOBS_PREFIX:-jobs/bank-mas/}"
+      OPENVERSE_BASE_URL: "${OPENVERSE_BASE_URL:-https://api.openverse.org}"
+      OPENVERSE_CLIENT_ID: "${OPENVERSE_CLIENT_ID:-}"
+      OPENVERSE_CLIENT_SECRET: "${OPENVERSE_CLIENT_SECRET:-}"
+      OPENVERSE_PAGE_SIZE: "${OPENVERSE_PAGE_SIZE:-20}"
+      OPENVERSE_MAX_PAGES_PER_CLASS: "${OPENVERSE_MAX_PAGES_PER_CLASS:-5}"
+      OPENVERSE_REQUEST_TIMEOUT: "${OPENVERSE_REQUEST_TIMEOUT:-8s}"
+      OPENVERSE_MIN_REQUEST_INTERVAL: "${OPENVERSE_MIN_REQUEST_INTERVAL:-250ms}"
+      FETCHER_HTTP_CONNECT_TIMEOUT: "${FETCHER_HTTP_CONNECT_TIMEOUT:-10s}"
+      FETCHER_DOWNLOAD_TIMEOUT: "${FETCHER_DOWNLOAD_TIMEOUT:-20s}"
+      FETCHER_DOWNLOAD_MAX_BYTES: "${FETCHER_DOWNLOAD_MAX_BYTES:-8388608}"
+      FETCHER_DOWNLOAD_MAX_PIXELS: "${FETCHER_DOWNLOAD_MAX_PIXELS:-25000000}"
+      FETCHER_SSE_HEARTBEAT_INTERVAL_MS: "${FETCHER_SSE_HEARTBEAT_INTERVAL_MS:-15000}"
+      FETCHER_SSE_TIMEOUT: "${FETCHER_SSE_TIMEOUT:-30m}"
+      FETCHER_JOB_WORKER_THREADS: "${FETCHER_JOB_WORKER_THREADS:-2}"
+      FETCHER_JOB_QUEUE_CAPACITY: "${FETCHER_JOB_QUEUE_CAPACITY:-32}"
+      FETCHER_MAX_RETAINED_JOBS: "${FETCHER_MAX_RETAINED_JOBS:-200}"
+      FETCHER_ALLOW_PRIVATE_ADDRESSES: "false"
+      JAVA_TOOL_OPTIONS: "${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70 -XX:+UseSerialGC}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${FETCHER_PORT:-8081}:8081"
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: ../deploy/Containerfile.backend
+    restart: unless-stopped
+    depends_on:
+      - minio
+      - minio-init
+      - llama-embeddings
+      - fetcher
+    environment:
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      JAVA_BASE_URL: "${JAVA_BASE_URL:-http://fetcher:8081}"
+      JAVA_EVENTS_PATH: "${JAVA_EVENTS_PATH:-/api/v1/events/fetch}"
+      JAVA_HTTP_TIMEOUT_SECONDS: "${JAVA_HTTP_TIMEOUT_SECONDS:-10}"
+      SSE_ENABLED: "${SSE_ENABLED:-true}"
+      MINIO_ENDPOINT: "${MINIO_ENDPOINT_HOST:-minio:9000}"
+      MINIO_REGION: "${MINIO_REGION:-us-east-1}"
+      MINIO_ACCESS_KEY: "${MINIO_ROOT_USER:-bankmas-local-admin}"
+      MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-bankmas-local-password-change-me}"
+      MINIO_BUCKET: "${MINIO_BUCKET:-bank-mas-image-search}"
+      MINIO_ENSURE_BUCKET: "true"
+      MINIO_SECURE: "${MINIO_SECURE:-false}"
+      IMAGE_PREFIX: "${MINIO_IMAGES_PREFIX:-images/bank-mas/}"
+      JOBS_PREFIX: "${MINIO_JOBS_PREFIX:-jobs/bank-mas/}"
+      LLAMA_BASE_URL: "${LLAMA_BASE_URL:-http://llama-embeddings:8080}"
+      LLAMA_MODEL: "${LLAMA_MODEL_ALIAS:-embeddinggemma-2}"
+      LLAMA_TIMEOUT_SECONDS: "${LLAMA_TIMEOUT_SECONDS:-180}"
+      EMBEDDING_DIMENSION: "${EMBEDDING_DIMENSION:-768}"
+      QUERY_PROMPT_PREFIX: "${QUERY_PROMPT_PREFIX:-task: search result | query:}"
+      MILVUS_URI: "${MILVUS_URI:-/data/milvus.db}"
+      MILVUS_COLLECTION: "${MILVUS_COLLECTION:-image_embeddings}"
+      SEARCH_DEFAULT_TOP_K: "${SEARCH_DEFAULT_TOP_K:-12}"
+      SEARCH_MAX_TOP_K: "${SEARCH_MAX_TOP_K:-50}"
+      INGEST_BATCH_SIZE: "${INGEST_BATCH_SIZE:-1}"
+      RECONCILIATION_ENABLED: "${RECONCILIATION_ENABLED:-true}"
+      RECONCILIATION_ON_STARTUP: "${RECONCILIATION_ON_STARTUP:-true}"
+      RECONCILIATION_INTERVAL_SECONDS: "${RECONCILIATION_INTERVAL_SECONDS:-120}"
+      RECONCILIATION_RETRY_FAILED: "${RECONCILIATION_RETRY_FAILED:-false}"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
+    volumes:
+      # Milvus Lite database lives in a named volume owned by the container
+      # user. Use `podman volume export` for backups (see README.md).
+      - milvus-data:/data
+    healthcheck:
+      test: "/app/.venv/bin/python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)\""
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: ../deploy/Containerfile.frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      API_BASE_URL: "${API_BASE_URL:-http://127.0.0.1:8000}"
+      API_TIMEOUT_SECONDS: "${API_TIMEOUT_SECONDS:-30}"
+      API_SEARCH_TIMEOUT_SECONDS: "${API_SEARCH_TIMEOUT_SECONDS:-90}"
+      FRONTEND_POLL_INTERVAL_SECONDS: "${FRONTEND_POLL_INTERVAL_SECONDS:-3}"
+      FRONTEND_MAX_AUTO_POLLS: "${FRONTEND_MAX_AUTO_POLLS:-150}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-8501}:8501"
+    healthcheck:
+      test: "/app/.venv/bin/python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3)\""
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # The frontend uses API_BASE_URL for server-side API calls AND for resolving
+  # relative imageUrl values in the browser. For a localhost deployment those
+  # two needs conflict inside a container: `localhost` is the frontend itself.
+  # This sidecar shares the frontend network namespace and forwards its
+  # loopback:8000 to backend:8000. The browser still uses the published host
+  # port 8000 directly. With a browser-reachable API_BASE_URL you can drop it.
+  api-proxy:
+    image: docker.io/alpine/socat:1.8.1.3
+    restart: unless-stopped
+    depends_on:
+      - frontend
+    network_mode: "service:frontend"
+    command:
+      - "TCP-LISTEN:8000,fork,reuseaddr,bind=127.0.0.1"
+      - "TCP:backend:8000"
+
+volumes:
+  minio-data:
+  milvus-data:

@@ -1,1 +1,65 @@
 Take-Home Assignment — ML Engineer (Bank MAS).pdf
+
+# Local secrets and environment
+.env
+.env.*
+!.env.example
+
+# Downloaded models (large, licensed separately)
+/models/
+*.gguf
+*.ggml
+
+# Local runtime data: Milvus Lite database, exports, scraped image dumps
+/data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+.python-version
+.uv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.egg-info/
+dist/
+build/
+site-packages/
+
+# Java / Maven / Gradle
+target/
+*.class
+*.war
+.gradle/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Logs and temporary artifacts
+*.log
+/logs/
+/tmp/
+/.tmp/
+
+# Screenshots produced locally (do not ignore docs/ or source images)
+/screenshots/
+*.tmp.png
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
