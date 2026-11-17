@@ -116,7 +116,7 @@ flowchart LR
     OV["Openverse API"]
     SRC["External Image Hosts"]
 
-    MINIO[("MinIO<br/>images/ + jobs/")]
+    MINIO[("MinIO<br/>images/bank-mas/ + jobs/bank-mas/")]
     INGEST["Python Ingestion Pipeline"]
     MODEL["llama.cpp / llama-server<br/>EmbeddingGemma 2 + mmproj"]
     MILVUS[("Milvus Lite<br/>Image Vectors + Metadata")]
@@ -158,7 +158,7 @@ flowchart LR
     PY["Python FastAPI<br/>Search API"]
     MODEL["llama.cpp / llama-server<br/>EmbeddingGemma 2"]
     MILVUS[("Milvus Lite<br/>Image Vectors + Metadata")]
-    MINIO[("MinIO<br/>images/")]
+    MINIO[("MinIO<br/>images/bank-mas/")]
 
     U -- "1. Natural-language query<br/>contoh: a dog playing in the snow" --> ST
     ST -- "2. POST /api/v1/search<br/>query + top_k" --> PY
@@ -261,13 +261,24 @@ Gunakan satu bucket aplikasi dengan prefix yang jelas:
 
 ```text
 images/
-  {sha256}.{extension}
+  bank-mas/
+    {sha256}.{extension}
 
 jobs/
-  {jobId}/
-    fetch-manifest.json
-    ingestion-status.json
+  bank-mas/
+    {jobId}/
+      fetch-manifest.json
+      ingestion-status.json
 ```
+
+Prefix wajib:
+
+- Image objects: `images/bank-mas/`
+- Job objects: `jobs/bank-mas/{jobId}/`
+- Fetch manifest: `jobs/bank-mas/{jobId}/fetch-manifest.json`
+- Ingestion status: `jobs/bank-mas/{jobId}/ingestion-status.json`
+
+Prefix harus dibuat configurable melalui environment, dengan nilai default di atas, dan digunakan secara konsisten oleh Java, Python, reconciliation, serta dokumentasi API.
 
 MinIO hanya menyimpan image objects dan catatan pekerjaan. Metadata gambar disimpan di Milvus bersama image vector dan tidak lagi disimpan sebagai object metadata terpisah.
 
@@ -290,7 +301,7 @@ Java menulis manifest final setelah proses fetching selesai:
   "images": [
     {
       "imageId": "7ca92f...",
-      "objectKey": "images/7ca92f.jpg",
+      "objectKey": "images/bank-mas/7ca92f.jpg",
       "contentType": "image/jpeg",
       "sha256": "7ca92f...",
       "width": 1024,
@@ -488,7 +499,7 @@ Reconciliation tidak menggantikan SSE. SSE tetap menjadi trigger utama dengan la
 
 Python harus dapat:
 
-1. Memindai `jobs/*/fetch-manifest.json` saat startup.
+1. Memindai `jobs/bank-mas/*/fetch-manifest.json` saat startup.
 2. Memindai manifest secara berkala dengan interval konfigurabel.
 3. Membandingkan fetch manifest dengan `ingestion-status.json`.
 4. Memproses manifest yang belum memiliki status `INDEXED`.
@@ -580,7 +591,7 @@ Acceptance criteria:
 - Implementasikan `POST /api/v1/fetch-jobs`.
 - Implementasikan background fetching dan status endpoint.
 - Implementasikan Openverse client, downloader, retry, dan rate-limit handling.
-- Simpan gambar ke `images/`.
+- Simpan gambar ke `images/bank-mas/`.
 - Sertakan metadata teknis, atribusi, dan metadata evaluasi Openverse di fetch manifest.
 - Jangan menyimpan metadata gambar sebagai object terpisah di MinIO.
 

@@ -151,7 +151,7 @@ Java menyimpan image objects di MinIO dan menyertakan metadata Openverse di fetc
 ```text
 id: fetch:fetch-20261116-001:completed
 event: fetch.completed
-data: {"jobId":"fetch-20261116-001","manifestKey":"jobs/fetch-20261116-001/fetch-manifest.json"}
+data: {"jobId":"fetch-20261116-001","manifestKey":"jobs/bank-mas/fetch-20261116-001/fetch-manifest.json"}
 ```
 
 Isi event:
