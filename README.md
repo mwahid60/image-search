@@ -69,7 +69,7 @@ Semua port di-bind ke `127.0.0.1` secara default. **Jangan ubah `BIND_ADDRESS`**
 - `curl` untuk mengunduh model.
 - Python 3.10+ di host, hanya untuk menjalankan smoke test (script memakai standard library).
 - Ruang disk minimal sekitar 5 GB untuk image container, model (~730 MB), dan data.
-- RAM 8 GB bisa dicoba dengan concurrency rendah; 16 GB lebih nyaman. Ini pedoman, bukan hasil benchmark.
+- RAM: default compose dituning untuk Podman VM 2 GB (context/batch 2048, satu sequence, satu ingestion worker). 2 GB tetap sangat ketat dan OOM masih mungkin terjadi, terutama untuk gambar besar atau ingestion berturut-turut; 8 GB lebih nyaman dan 16 GB lega. Ini pedoman, bukan hasil benchmark.
 - Tidak perlu GPU, Docker Desktop, Java, Maven, atau `uv` di host. Build Java dan Python dilakukan di container.
 - macOS: jalankan `podman machine init && podman machine start` sekali, lalu pastikan `podman compose version` bekerja.
 - Linux dengan SELinux: jika model atau volume gagal dibaca, tambahkan `:z` pada mount model di `deploy/compose.yaml`.
@@ -203,6 +203,13 @@ Frontend memisahkan dua URL: `API_BASE_URL=http://backend:8000` untuk panggilan 
 7. Backend menulis `jobs/bank-mas/{jobId}/ingestion-status.json` dengan status `PENDING`, `INGESTING`, `INDEXED`, atau `FAILED`.
 8. Jika SSE terlewat, backend memakai reconciliation saat startup/berkala dan endpoint `POST /api/v1/ingest/{jobId}`. Re-ingestion aman karena upsert dan ID deterministik.
 
+Catatan runtime:
+
+- **Manifest `PARTIAL` tetap diproses.** Jika manifest berstatus `PARTIAL` karena sebagian download gagal, Python tetap meng-ingest gambar yang berhasil dan `failedDownloads` tetap tercatat. Retry/reconciliation memakai manifest yang sama dan tidak mengunduh ulang gambar dari Openverse.
+- **Resize hanya untuk embedding.** Jika gambar melebihi `INGEST_EMBEDDING_MAX_DIMENSION`, backend memperkecil salinan di memori sebelum mengirim ke llama.cpp. Object asli di MinIO, object key, dan SHA-256 tidak diubah; resize tidak menimpa file asli.
+- **Openverse timeout 20 detik.** Default dinaikkan dari 8 detik karena respons Openverse sering lebih lambat dari batas lama. Retry policy dan backoff tidak diubah; timeout ini hanya memberi ruang per request.
+- **Embedding retry dan MinIO pool.** Backend mencoba ulang embedding hingga `EMBEDDING_MAX_ATTEMPTS` dengan backoff `EMBEDDING_RETRY_INITIAL_SECONDS` sampai `EMBEDDING_RETRY_MAX_SECONDS`, dan memakai `MINIO_POOL_MAXSIZE` koneksi.
+
 SSE bukan durable queue. Manifest dan ingestion status di MinIO adalah catatan persisten; status runtime di Java/Python bisa hilang saat restart.
 
 ## Konvensi MinIO
@@ -229,15 +236,21 @@ Semua variabel ada di `.env.example`. Ringkasan:
 | `MINIO_IMAGES_PREFIX`, `MINIO_JOBS_PREFIX` | `images/bank-mas/`, `jobs/bank-mas/` | fetcher, backend |
 | `MODELS_DIR` | `../models` (relatif ke `deploy/`) | llama.cpp |
 | `MODEL_FILE`, `MMPROJ_FILE` | dua file GGUF di atas | llama.cpp |
-| `LLAMA_CTX_SIZE` | `8192` | llama.cpp |
+| `LLAMA_CTX_SIZE` | `2048` | llama.cpp |
+| `LLAMA_BATCH_SIZE`, `LLAMA_UBATCH_SIZE` | `2048` | llama.cpp |
 | `LLAMA_THREADS` | `4` | llama.cpp |
 | `OPENVERSE_BASE_URL` | `https://api.openverse.org` | fetcher |
+| `OPENVERSE_REQUEST_TIMEOUT` | `20s` | fetcher |
 | `OPENVERSE_CLIENT_ID`, `OPENVERSE_CLIENT_SECRET` | kosong | fetcher (opsional) |
 | `FETCHER_HTTP_MAX_REDIRECTS` | `5` | fetcher |
 | `FETCHER_SSE_MAX_SUBSCRIBERS` | `8` | fetcher |
 | `MILVUS_DB_PATH` | `/data/milvus.db` | backend (Milvus Lite) |
 | `MILVUS_COLLECTION` | `image_embeddings` | backend |
 | `LLAMA_BASE_URL` | `http://llama-embeddings:8080` | backend |
+| `EMBEDDING_MAX_ATTEMPTS` | `5` | backend |
+| `EMBEDDING_RETRY_INITIAL_SECONDS`, `EMBEDDING_RETRY_MAX_SECONDS` | `1`, `15` | backend |
+| `INGEST_EMBEDDING_MAX_DIMENSION` | `1024` | backend |
+| `MINIO_POOL_MAXSIZE` | `32` | backend |
 | `QUERY_PROMPT_PREFIX` | `task: search result \| query:` | backend |
 | `RECONCILIATION_INTERVAL_SECONDS` | `120` | backend |
 | `INGEST_BATCH_SIZE` | `1` | backend |
@@ -245,7 +258,7 @@ Semua variabel ada di `.env.example`. Ringkasan:
 | `API_BASE_URL` | `http://backend:8000` | frontend server-side (internal compose) |
 | `PUBLIC_API_BASE_URL` | `http://127.0.0.1:8000` | frontend / browser (URL gambar) |
 
-Nama variabel di atas adalah kontrak deployment yang dicocokkan dengan implementasi branch `feature/java-fetcher`, `feature/python-backend`, dan `feature/streamlit-frontend`: Java memakai `FETCHER_PORT`, `FETCHER_HTTP_MAX_REDIRECTS`, `FETCHER_SSE_MAX_SUBSCRIBERS`, `OPENVERSE_BASE_URL`, `MINIO_IMAGES_PREFIX`, `MINIO_JOBS_PREFIX`; backend memakai `JAVA_BASE_URL`, `IMAGE_PREFIX`, `JOBS_PREFIX`, `QUERY_PROMPT_PREFIX`, `INGEST_BATCH_SIZE`, `INGEST_MAX_IMAGE_PIXELS`, `RECONCILIATION_*`; frontend memakai `API_BASE_URL`, `PUBLIC_API_BASE_URL`, `API_TIMEOUT_SECONDS`, `API_SEARCH_TIMEOUT_SECONDS`, `FRONTEND_POLL_INTERVAL_SECONDS`. Jika implementasi berubah, sesuaikan `deploy/compose.yaml` dan `.env.example` bersama-sama, jangan mengganti nama prefix default.
+Nama variabel di atas adalah kontrak deployment yang dicocokkan dengan implementasi branch `feature/java-fetcher`, `feature/python-backend`, dan `feature/streamlit-frontend`: Java memakai `FETCHER_PORT`, `FETCHER_HTTP_MAX_REDIRECTS`, `FETCHER_SSE_MAX_SUBSCRIBERS`, `OPENVERSE_BASE_URL`, `OPENVERSE_REQUEST_TIMEOUT`, `MINIO_IMAGES_PREFIX`, `MINIO_JOBS_PREFIX`; backend memakai `JAVA_BASE_URL`, `IMAGE_PREFIX`, `JOBS_PREFIX`, `QUERY_PROMPT_PREFIX`, `EMBEDDING_MAX_ATTEMPTS`, `EMBEDDING_RETRY_INITIAL_SECONDS`, `EMBEDDING_RETRY_MAX_SECONDS`, `INGEST_BATCH_SIZE`, `INGEST_EMBEDDING_MAX_DIMENSION`, `INGEST_MAX_IMAGE_PIXELS`, `MINIO_POOL_MAXSIZE`, `RECONCILIATION_*`; frontend memakai `API_BASE_URL`, `PUBLIC_API_BASE_URL`, `API_TIMEOUT_SECONDS`, `API_SEARCH_TIMEOUT_SECONDS`, `FRONTEND_POLL_INTERVAL_SECONDS`. Jika implementasi berubah, sesuaikan `deploy/compose.yaml` dan `.env.example` bersama-sama, jangan mengganti nama prefix default.
 
 ## Model dan image pinning
 
@@ -264,7 +277,7 @@ Image dipin ke `ghcr.io/ggml-org/llama.cpp:server-b12429` (saat file ini ditulis
 
 Payload multimodal bertipe (nested `content` parts di dalam setiap item `input`) mengikuti kontrak di `docs/rencana-implementasi.md` dan bentuk yang dilaporkan berhasil di issue upstream `ggml-org/llama.cpp#30082`. Tetap jalankan `scripts/smoke_test_embeddings.py` setelah mengganti image; jangan menganggap tag ini otomatis kompatibel.
 
-Default CPU: `--n-gpu-layers 0`, `--parallel 1`, `--threads 4`, context/batch 8192, dan batas image token 280 sesuai model card. Naikkan `LLAMA_THREADS` mendekati jumlah core fisik, dan turunkan context/batch jika RAM terbatas.
+Default CPU: `--n-gpu-layers 0`, `--parallel 1`, `--threads 4`, context/batch 2048, dan batas image token 280 sesuai model card. Nilai 2048 dipilih agar KV cache dan batch tidak menghabiskan Podman VM 2 GB; jangan menaikkannya tanpa menambah memori VM. Naikkan `LLAMA_THREADS` mendekati jumlah core fisik.
 
 ### MinIO image
 
@@ -313,7 +326,7 @@ Yang benar-benar dijalankan di branch ini (Podman 5.5.0, provider `podman-compos
 - `scripts/smoke_test_embeddings.py` diuji terhadap server HTTP mock lokal (bukan llama.cpp): skenario lolos mengembalikan exit 0, sedangkan jumlah vector yang salah dan checksum model yang salah mengembalikan exit 1. Ini memvalidasi alur script, bukan kualitas embedding.
 - Metadata model dan image dicek lewat API registry/Hugging Face (tag, digest, ukuran, SHA-256) tanpa menarik image atau mengunduh bobot model.
 
-Yang **belum** dilakukan: build image, `podman compose up`, download model penuh, dan uji end-to-end dengan llama.cpp/Openverse. Jangan menganggap stack sudah terbukti berjalan hanya dari README ini.
+Yang **belum** dilakukan: `podman compose up` untuk seluruh stack, download model penuh, dan uji end-to-end dengan Openverse. Image backend/frontend sudah pernah di-build dan di-smoke-boot terpisah. Jangan menganggap stack sudah terbukti berjalan hanya dari README ini.
 
 ## Data dan kelas
 
@@ -333,7 +346,7 @@ Evaluasi retrieval juga belum dijalankan. `evaluation_metadata` hanya boleh diba
 - Ingestion CPU bisa lambat, terutama untuk gambar besar dan banyak gambar per kelas.
 - Kualitas embedding dapat turun karena quantisasi Q4 dibandingkan model presisi penuh.
 - Model multimodal membutuhkan llama.cpp build yang tepat. Smoke test wajib dijalankan setelah mengganti image/tag.
-- Batas image token 280 mengikuti model card; jika build llama.cpp tidak menghormatinya, gambar besar dapat melebihi context dan gagal. Backend sebaiknya melakukan resize dan validasi ukuran.
+- Batas image token 280 mengikuti model card; jika build llama.cpp tidak menghormatinya, gambar besar dapat melebihi context dan gagal. Backend membatasi dimensi embedding lewat `INGEST_EMBEDDING_MAX_DIMENSION`, tetapi object asli di MinIO tetap utuh. VM 2 GB tetap ketat dan OOM mungkin terjadi pada gambar besar atau concurrency tinggi.
 - Image MinIO memakai mirror legacy; lihat bagian MinIO image.
 - Belum ada evaluasi retrieval, screenshot, atau hasil benchmark di repository ini.
 - Containerfile mengasumsikan struktur yang didokumentasikan: `fetcher/pom.xml` + `fetcher/src`, `backend/app/main.py` + `backend/pyproject.toml`, `frontend/app.py` + `frontend/image_search/`. Penyesuaian diperlukan jika implementasi memakai layout lain.
@@ -343,7 +356,7 @@ Evaluasi retrieval juga belum dijalankan. `evaluation_metadata` hanya boleh diba
 
 - Evaluasi retrieval offline (mis. precision@k per kelas) memakai `evaluation_metadata` setelah ranking selesai, dengan laporan keterbatasan ground truth Openverse.
 - Menambahkan healthcheck/retry yang eksplisit di Java dan Python untuk startup yang lebih deterministik.
-- Menambah image preprocessing (resize, batas piksel) di ingestion agar biaya CPU dan token gambar terkendali.
+- Menyempurnakan kualitas resize dan strategi kompresi untuk embedding tanpa mengubah object asli di MinIO.
 - Menyediakan opsi image MinIO resmi dan dokumentasi registry untuk lingkungan yang punya akses.
 - Menambahkan integration test dengan Openverse mock dan dataset kecil yang deterministik.
 

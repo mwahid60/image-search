@@ -175,7 +175,7 @@ echo "  llama-server \\"
 echo "    --model ${MODELS_DIR}/${MODEL_FILE} \\"
 echo "    --mmproj ${MODELS_DIR}/${MMPROJ_FILE} \\"
 echo "    --alias embeddinggemma-2 --embeddings --pooling mean \\"
-echo "    --ctx-size 8192 --batch-size 8192 --ubatch-size 8192 \\"
+echo "    --ctx-size 2048 --batch-size 2048 --ubatch-size 2048 \\"
 echo "    --image-min-tokens 280 --image-max-tokens 280 \\"
 echo "    --n-gpu-layers 0 --host 127.0.0.1 --port 8080"
 echo
