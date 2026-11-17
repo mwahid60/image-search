@@ -1,6 +1,6 @@
 # Local runtime data (Milvus Lite database, caches)
-data/
-models/
+/data/
+/models/
 .env
 .venv/
 __pycache__/
