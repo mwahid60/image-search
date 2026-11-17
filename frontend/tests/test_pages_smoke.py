@@ -146,9 +146,10 @@ render()
     assert any("URL gambar yang tidak valid" in item.value for item in at.warning)
 
 
-def test_app_entrypoint_navigates_to_fetch_page() -> None:
+def test_app_entrypoint_navigates_to_search_page_by_default() -> None:
     at = AppTest.from_file(str(FRONTEND_DIR / "app.py"), default_timeout=15)
     at.run()
 
     assert not at.exception
-    assert [title.value for title in at.title] == ["Fetch Images"]
+    assert [title.value for title in at.title] == ["Search"]
+    assert any("Masukkan kueri" in info.value for info in at.info)

@@ -24,12 +24,16 @@ def main() -> None:
 
     pages = [
         st.Page(
+            search.render,
+            title="Search",
+            url_path="search",
+            default=True,
+        ),
+        st.Page(
             fetch_images.render,
             title="Fetch Images",
             url_path="fetch-images",
-            default=True,
         ),
-        st.Page(search.render, title="Search", url_path="search"),
     ]
 
     navigation = st.navigation(pages)

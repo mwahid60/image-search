@@ -19,6 +19,7 @@ from ..formatting import (
 STATE_RESULTS = "search_results"
 STATE_ERROR = "search_error"
 STATE_LAST_QUERY = "search_last_query"
+STATE_QUERY_INPUT = "search_query_input"
 STATE_SHOW_SCORES = "search_show_scores"
 
 
@@ -31,6 +32,12 @@ def render() -> None:
 
     config = runtime.get_config()
     client = runtime.get_client(config)
+
+    # The widget owns the text the user is typing. Seed it once from the last
+    # submitted query, never on later reruns, so a new submission is not reset
+    # to the previous query.
+    if STATE_QUERY_INPUT not in st.session_state:
+        st.session_state[STATE_QUERY_INPUT] = st.session_state.get(STATE_LAST_QUERY, "")
 
     _render_form(client)
     show_scores = st.checkbox(
@@ -46,7 +53,7 @@ def _render_form(client: ApiClient) -> None:
     with st.form("search-form"):
         query = st.text_input(
             "Kueri pencarian",
-            value=st.session_state.get(STATE_LAST_QUERY, ""),
+            key=STATE_QUERY_INPUT,
             placeholder="contoh: a dog playing in the snow",
             max_chars=state.MAX_QUERY_LENGTH,
             help=(

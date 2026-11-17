@@ -2,10 +2,11 @@
 
 Frontend dua halaman untuk sistem mini image search:
 
-1. **Fetch Images** — memulai fetch job, memantau fetching/ingestion, dan
+1. **Search** — pencarian bahasa alami dengan image grid, skor opsional, dan
+   atribusi creator/license/source URL. Ini adalah halaman default saat
+   aplikasi dibuka.
+2. **Fetch Images** — memulai fetch job, memantau fetching/ingestion, dan
    menyediakan tombol **Retry Ingestion**.
-2. **Search** — pencarian bahasa alami dengan image grid, skor opsional, dan
-   atribusi creator/license/source URL.
 
 Frontend hanya memanggil Python FastAPI. Tidak ada akses langsung ke Java,
 Openverse, MinIO, Milvus, atau llama.cpp dari sini.
@@ -29,6 +30,7 @@ frontend/
 │   ├── test_config.py
 │   ├── test_formatting.py
 │   ├── test_pages_smoke.py
+│   ├── test_search_page.py
 │   └── test_state.py
 └── pyproject.toml
 ```
