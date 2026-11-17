@@ -11,7 +11,11 @@ from pydantic import ValidationError
 
 from app.config import Settings
 from app.errors import AppError, ManifestError, ObjectStoreError
-from app.ingestion.images import ImageValidationError, inspect_image
+from app.ingestion.images import (
+    ImageValidationError,
+    inspect_image,
+    prepare_embedding_image,
+)
 from app.integrations.embeddings import EmbeddingsClient
 from app.integrations.object_store import ObjectStore
 from app.integrations.vector_store import VectorStore
@@ -112,6 +116,20 @@ class IngestionPipeline:
             )
         return manifest
 
+    async def _previous_status(self, job_id: str) -> IngestionStatus | None:
+        cached = self._status_cache.get(job_id)
+        if cached is not None:
+            return cached
+        try:
+            return await self.read_persisted_status(job_id)
+        except AppError as exc:
+            logger.warning(
+                "Could not read previous ingestion status for %s: %s",
+                job_id,
+                exc.message,
+            )
+            return None
+
     async def _write_status(self, status: IngestionStatus) -> None:
         key = self._settings.ingestion_status_key(status.job_id)
         payload = json.dumps(
@@ -142,6 +160,8 @@ class IngestionPipeline:
             status=IngestionState.FAILED,
             errors=[IngestionError(stage=stage, reason=reason)],
             failed=1,
+            attempts=cached.attempts if cached else 1,
+            total_images=cached.total_images if cached else 0,
             started_at=cached.started_at if cached else self._clock.iso_now(),
             completed_at=self._clock.iso_now(),
         )
@@ -154,9 +174,11 @@ class IngestionPipeline:
 
     async def _ingest(self, job_id: str, manifest_key: str | None) -> IngestionStatus:
         started_at = self._clock.iso_now()
+        previous = await self._previous_status(job_id)
         status = IngestionStatus(
             job_id=job_id,
             status=IngestionState.INGESTING,
+            attempts=(previous.attempts if previous else 0) + 1,
             started_at=started_at,
         )
         self._status_cache[job_id] = status
@@ -208,7 +230,6 @@ class IngestionPipeline:
                         image_id = self._resolve_image_id(image)
                         seen_in_job.add(image_id)
                         duplicates += 1
-                        indexed += 1
                         logger.info("Skipping duplicate image %s in job %s", image_id, job_id)
                         continue
                     record = await self._process_image(image, existing)
@@ -293,6 +314,11 @@ class IngestionPipeline:
             )
         try:
             info = inspect_image(data, max_pixels=self._settings.ingest_max_image_pixels)
+            embedding_bytes, embedding_mime = prepare_embedding_image(
+                data,
+                info.mime_type,
+                max_dimension=self._settings.ingest_embedding_max_dimension,
+            )
         except ImageValidationError as exc:
             raise _ImageFailure("validate", str(exc)) from exc
 
@@ -312,7 +338,7 @@ class IngestionPipeline:
 
         image_id = computed_sha
         try:
-            vector = await self._embeddings.embed_image(data, info.mime_type)
+            vector = await self._embeddings.embed_image(embedding_bytes, embedding_mime)
             embedding = l2_normalize(vector, dimension=self._settings.embedding_dimension)
         except AppError as exc:
             raise _ImageFailure("embedding", exc.message) from exc
@@ -342,7 +368,13 @@ class IngestionPipeline:
         duplicates: int,
         errors: list[IngestionError],
     ) -> IngestionStatus:
-        final_state = IngestionState.INDEXED if indexed > 0 else IngestionState.FAILED
+        usable = indexed + duplicates
+        if usable == 0:
+            final_state = IngestionState.FAILED
+        elif errors:
+            final_state = IngestionState.PARTIAL
+        else:
+            final_state = IngestionState.INDEXED
         final = status.model_copy(
             update={
                 "status": final_state,

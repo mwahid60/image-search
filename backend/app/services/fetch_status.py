@@ -146,7 +146,7 @@ class FetchStatusService:
     @staticmethod
     def _ingestion_status(manifest: FetchManifest | None, ingestion: IngestionStatus | None) -> str:
         if ingestion is not None:
-            return ingestion.status.value
+            return ingestion.effective_state.value
         if manifest is None:
             return "UNKNOWN"
         if manifest.status in {"COMPLETED", "PARTIAL"}:

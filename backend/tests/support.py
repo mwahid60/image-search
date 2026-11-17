@@ -34,6 +34,8 @@ def make_settings(**overrides: Any) -> Settings:
         "minio_secret_key": "test-secret",
         "milvus_db_path": "data/test-milvus.db",
         "embedding_dimension": 768,
+        "embedding_retry_initial_seconds": 0.001,
+        "embedding_retry_max_seconds": 0.002,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)

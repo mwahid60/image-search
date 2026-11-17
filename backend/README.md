@@ -92,12 +92,15 @@ local-development values; credentials have **no defaults**.
 | `MINIO_SECURE` | `false` | TLS for MinIO |
 | `MINIO_BUCKET` | `bank-mas` | Application bucket |
 | `MINIO_ENSURE_BUCKET` | `true` | Create bucket at startup if missing |
+| `MINIO_POOL_MAXSIZE` | `32` | urllib3 connection pool size for MinIO (blocking, for concurrent image reads) |
 | `IMAGE_PREFIX` | `images/bank-mas/` | Required image object prefix |
 | `JOBS_PREFIX` | `jobs/bank-mas/` | Required job object prefix |
 | `LLAMA_BASE_URL` | `http://localhost:8080` | llama.cpp server |
 | `LLAMA_MODEL` | `embeddinggemma-2` | `model` field in embeddings request |
 | `LLAMA_TIMEOUT_SECONDS` | `120` | Embedding timeout |
 | `EMBEDDING_DIMENSION` | `768` | Validated for every vector |
+| `EMBEDDING_MAX_ATTEMPTS` | `5` | Attempts for 503/timeout/connection failures |
+| `EMBEDDING_RETRY_INITIAL_SECONDS` / `EMBEDDING_RETRY_MAX_SECONDS` | `1` / `15` | Exponential backoff bounds |
 | `QUERY_PROMPT_PREFIX` | `task: search result \| query: ` | EmbeddingGemma query task prefix |
 | `MILVUS_DB_PATH` | `data/milvus.db` | Milvus Lite database file path (`/data/` is git-ignored) |
 | `MILVUS_TOKEN` | unset | Only for a Milvus server that requires authentication; leave unset for Lite |
@@ -106,10 +109,12 @@ local-development values; credentials have **no defaults**.
 | `INGEST_BATCH_SIZE` | `4` | Images per embedding/upsert batch |
 | `INGEST_MAX_IMAGE_BYTES` | `15728640` | Per-image file size guard |
 | `INGEST_MAX_IMAGE_PIXELS` | `25000000` | Per-image pixel guard (checked before full decode) |
+| `INGEST_EMBEDDING_MAX_DIMENSION` | `1024` | Embedding copy max side; larger images are downscaled locally |
 | `RECONCILIATION_ENABLED` | `true` | Periodic fallback scan |
 | `RECONCILIATION_ON_STARTUP` | `true` | Startup fallback scan |
 | `RECONCILIATION_INTERVAL_SECONDS` | `300` | Periodic interval |
 | `RECONCILIATION_RETRY_FAILED` | `false` | Auto-retry `FAILED` ingestion |
+| `RECONCILIATION_MAX_ATTEMPTS` | `3` | Automatic retry cap per job (manual retry bypasses) |
 | `MAX_CLASSES_PER_REQUEST` / `MAX_IMAGES_PER_CLASS` | `50` / `50` | Proxy validation |
 
 `backend/.env.example` lists the same keys.
@@ -139,7 +144,8 @@ Interactive docs: `http://localhost:8000/docs`.
 - `POST /api/v1/fetch-jobs` — body `{"classes": ["dog"], "imagesPerClass": 20}`,
   forwards to Java, returns `202 {"jobId": "...", "status": "FETCHING"}`.
 - `GET /api/v1/fetch-jobs/{jobId}` — aggregates Java status, fetch manifest
-  (downloads/failures), and ingestion status (`PENDING|INGESTING|INDEXED|FAILED`).
+  (downloads/failures), and ingestion status
+  (`PENDING|INGESTING|INDEXED|PARTIAL|FAILED`).
 - `POST /api/v1/ingest/{jobId}` — idempotent manual retry; `202` with
   `ENQUEUED` or `ALREADY_RUNNING`; `404 MANIFEST_NOT_FOUND` when Java has not written
   the manifest yet.
@@ -160,13 +166,35 @@ Errors use `{"error": {"code": "...", "message": "...", "details": ...}}`.
 2. Job enters the single in-memory worker. Reconciliation and manual retry share
    the same queue, so a job is never ingested twice in parallel.
 3. Manifest is read from MinIO; each image object must live under `images/bank-mas/`.
-4. Bytes are decoded with Pillow, size-limited, hashed with SHA-256
-   (`imageId` must match), embedded with **only** image bytes, L2-normalized.
-5. Milvus upsert is keyed by `image_id`; `created_at` is preserved on re-ingestion,
-   duplicates are counted and skipped.
-6. `jobs/bank-mas/{jobId}/ingestion-status.json` is written (`INGESTING` at start,
-   `INDEXED` when at least one image succeeded, `FAILED` otherwise). Per-image errors
-   do not abort the job.
+4. Bytes are decoded with Pillow, pixel/size-limited, hashed with SHA-256
+   (`imageId` must match). Images whose longest side exceeds
+   `INGEST_EMBEDDING_MAX_DIMENSION` are EXIF-orientation corrected and downscaled
+   to a JPEG (or PNG when alpha is present) **for embedding only**; the original
+   MinIO object, hash, and metadata are unchanged. Only that copy is embedded,
+   then L2-normalized.
+5. llama.cpp requests retry HTTP 503, timeouts, and connection errors up to
+   `EMBEDDING_MAX_ATTEMPTS` with exponential backoff. 400/422 and other statuses
+   are never retried; payload bytes are never logged.
+6. Milvus upsert is keyed by `image_id`; `created_at` is preserved on re-ingestion.
+   `indexed` counts newly upserted images, `duplicates` counts already-indexed
+   images separately (duplicates do not increase `indexed`).
+7. `jobs/bank-mas/{jobId}/ingestion-status.json` is written (`INGESTING` at start,
+   then `INDEXED` when every usable image succeeded, `PARTIAL` when at least one
+   failed but `indexed + duplicates > 0`, `FAILED` when nothing is usable).
+   Per-image errors never abort the whole job. Each attempt increments the persisted
+   `attempts` counter.
+
+### Retry and recovery bounds
+
+Reconciliation treats `PARTIAL` as unfinished and retries it (also stale
+`PENDING`/`INGESTING`, and `FAILED` when `RECONCILIATION_RETRY_FAILED=true`) while
+`attempts < RECONCILIATION_MAX_ATTEMPTS` (default 3). Because every ingestion
+attempt increments the persisted counter and reconciliation runs on its configured
+interval, a permanent failure stops automatically instead of looping. Manual
+`POST /api/v1/ingest/{jobId}` always bypasses the automatic limit; retries skip
+already-indexed images, so only missing work is re-embedded. Legacy `INDEXED` records
+with `failed > 0` are treated as `PARTIAL` so the job created by the old status bug
+is recoverable.
 
 `evaluation_metadata` (title, tags, requested class, Openverse fields) is copied
 verbatim from the manifest into Milvus **only for offline evaluation**. It is never
@@ -190,7 +218,7 @@ Lite engine when available and skips when the local engine cannot start.
 
 - In-memory runtime status (queue/completed-job cache) is lost on restart; MinIO
   manifest + `ingestion-status.json` remain authoritative and reconciliation
-  re-enqueues anything not `INDEXED`.
+  re-enqueues unfinished work until the attempt cap is reached.
 - SSE has no durable replay; reconciliation is the fallback, not a replacement.
 - Single ingestion worker and single llama.cpp server target assignment scale.
 - Embeddings of already indexed images are skipped on retry (duplicates counted);
@@ -198,5 +226,9 @@ Lite engine when available and skips when the local engine cannot start.
 - Java restart loses its in-memory fetch job status; the Python aggregate then falls
   back to manifest data and reports a warning.
 - Milvus Lite index is `FLAT`; no scalar index is created for `evaluation_metadata`.
-- `RECONCILIATION_RETRY_FAILED=false` by default, so jobs that failed due to an
-  outage need a manual `POST /api/v1/ingest/{jobId}` (or enable retry).
+- `RECONCILIATION_RETRY_FAILED=false` by default, so `FAILED` jobs need a manual
+  `POST /api/v1/ingest/{jobId}` (or enable retry). `PARTIAL` jobs are retried
+  automatically until `RECONCILIATION_MAX_ATTEMPTS`; manual retry is always allowed.
+- Downscaling for embedding can still require one full decode of a pixel-limited
+  image (JPEG uses draft decoding where possible); the source object in MinIO is
+  never altered.

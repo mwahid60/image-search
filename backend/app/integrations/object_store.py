@@ -50,6 +50,8 @@ class MinioObjectStore:
             secure=settings.minio_secure,
             region=settings.minio_region,
             http_client=urllib3.PoolManager(
+                maxsize=settings.minio_pool_maxsize,
+                block=True,
                 timeout=urllib3.Timeout(
                     connect=settings.minio_timeout_seconds,
                     read=settings.minio_timeout_seconds,

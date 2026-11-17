@@ -17,7 +17,9 @@ def _vector(value: float = 0.1, dim: int = 768) -> list[float]:
     return [value] * dim
 
 
-def make_client(handler, settings=None) -> tuple[LlamaCppEmbeddingsClient, list[dict[str, Any]]]:
+def make_client(
+    handler, settings=None, sleep=None
+) -> tuple[LlamaCppEmbeddingsClient, list[dict[str, Any]]]:
     captured: list[dict[str, Any]] = []
 
     def wrapped(request: httpx.Request) -> httpx.Response:
@@ -28,7 +30,15 @@ def make_client(handler, settings=None) -> tuple[LlamaCppEmbeddingsClient, list[
     transport = httpx.MockTransport(wrapped)
     http = httpx.AsyncClient(transport=transport, base_url="http://llama.test")
     settings = settings or make_settings()
-    return LlamaCppEmbeddingsClient(settings, http), captured
+    return LlamaCppEmbeddingsClient(settings, http, sleep=sleep), captured
+
+
+class SleepRecorder:
+    def __init__(self) -> None:
+        self.delays: list[float] = []
+
+    async def __call__(self, delay: float) -> None:
+        self.delays.append(delay)
 
 
 async def test_image_payload_contains_only_image_bytes() -> None:
@@ -157,3 +167,116 @@ async def test_ping_reports_unavailable() -> None:
     with pytest.raises(EmbeddingError) as excinfo:
         await client.ping()
     assert excinfo.value.status_code == 503
+
+
+async def test_503_is_retried_with_exponential_backoff_then_succeeds() -> None:
+    calls: list[int] = []
+    settings = make_settings(
+        embedding_max_attempts=5,
+        embedding_retry_initial_seconds=0.5,
+        embedding_retry_max_seconds=1.0,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) < 3:
+            return httpx.Response(503, text="loading")
+        return httpx.Response(200, json={"data": [{"embedding": _vector()}]})
+
+    sleep = SleepRecorder()
+    client, _ = make_client(handler, settings=settings, sleep=sleep)
+
+    assert len(await client.embed_text("dog")) == 768
+    assert len(calls) == 3
+    assert sleep.delays == [0.5, 1.0]
+
+
+async def test_503_exhausts_attempts_with_clear_error() -> None:
+    calls: list[int] = []
+    settings = make_settings(
+        embedding_max_attempts=4,
+        embedding_retry_initial_seconds=0.5,
+        embedding_retry_max_seconds=1.0,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(503, text="out of memory")
+
+    sleep = SleepRecorder()
+    client, _ = make_client(handler, settings=settings, sleep=sleep)
+
+    with pytest.raises(EmbeddingError) as excinfo:
+        await client.embed_text("dog")
+    assert excinfo.value.code == "EMBEDDING_UNAVAILABLE"
+    assert excinfo.value.status_code == 503
+    assert "after 4 attempt(s)" in excinfo.value.message
+    assert len(calls) == 4
+    assert sleep.delays == [0.5, 1.0, 1.0]
+
+
+async def test_timeout_is_retried() -> None:
+    calls: list[int] = []
+    settings = make_settings(embedding_max_attempts=3)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.ReadTimeout("slow model", request=request)
+        return httpx.Response(200, json={"data": [{"embedding": _vector()}]})
+
+    client, _ = make_client(handler, settings=settings, sleep=SleepRecorder())
+    assert len(await client.embed_text("dog")) == 768
+    assert len(calls) == 2
+
+
+async def test_connection_error_is_retried() -> None:
+    calls: list[int] = []
+    settings = make_settings(embedding_max_attempts=3)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.ConnectError("connection refused", request=request)
+        return httpx.Response(200, json={"data": [{"embedding": _vector()}]})
+
+    client, _ = make_client(handler, settings=settings, sleep=SleepRecorder())
+    assert len(await client.embed_text("dog")) == 768
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("status_code", [400, 422])
+async def test_client_errors_are_not_retried(status_code: int) -> None:
+    calls: list[int] = []
+    sleep = SleepRecorder()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(status_code, text="bad request")
+
+    client, _ = make_client(handler, sleep=sleep)
+    with pytest.raises(EmbeddingError) as excinfo:
+        await client.embed_text("dog")
+    assert excinfo.value.code == "EMBEDDING_UPSTREAM_ERROR"
+    assert len(calls) == 1
+    assert sleep.delays == []
+
+
+async def test_retry_logging_never_includes_image_payload(caplog) -> None:
+    image = png_bytes("red", size=(64, 64))
+    encoded = base64.b64encode(image).decode()
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(503, text="loading")
+        return httpx.Response(200, json={"data": [{"embedding": _vector()}]})
+
+    caplog.set_level("WARNING", logger="app.integrations.embeddings")
+    client, _ = make_client(handler, sleep=SleepRecorder())
+    await client.embed_image(image, "image/png")
+
+    assert "retrying" in caplog.text
+    assert encoded not in caplog.text
+    assert "base64," not in caplog.text

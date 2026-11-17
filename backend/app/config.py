@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     minio_ensure_bucket: bool = True
     minio_timeout_seconds: float = Field(default=5.0, gt=0)
     minio_max_retries: int = Field(default=2, ge=0, le=10)
+    minio_pool_maxsize: int = Field(default=32, ge=1, le=256)
     image_prefix: str = DEFAULT_IMAGE_PREFIX
     jobs_prefix: str = DEFAULT_JOBS_PREFIX
     fetch_manifest_filename: str = FETCH_MANIFEST_FILENAME
@@ -64,6 +65,9 @@ class Settings(BaseSettings):
     llama_model: str = "embeddinggemma-2"
     llama_timeout_seconds: float = Field(default=120.0, gt=0)
     embedding_dimension: int = Field(default=768, gt=0)
+    embedding_max_attempts: int = Field(default=5, ge=1, le=10)
+    embedding_retry_initial_seconds: float = Field(default=1.0, gt=0)
+    embedding_retry_max_seconds: float = Field(default=15.0, gt=0)
     # Task prefix from the EmbeddingGemma model card. Must stay consistent between
     # ingestion (images only) and query embedding.
     query_prompt_prefix: str = "task: search result | query: "
@@ -86,12 +90,14 @@ class Settings(BaseSettings):
     ingest_batch_size: int = Field(default=4, ge=1, le=16)
     ingest_max_image_bytes: int = Field(default=15 * 1024 * 1024, gt=0)
     ingest_max_image_pixels: int = Field(default=25_000_000, gt=0)
+    ingest_embedding_max_dimension: int = Field(default=1024, ge=64, le=8192)
 
     # --- Reconciliation ---
     reconciliation_enabled: bool = True
     reconciliation_on_startup: bool = True
     reconciliation_interval_seconds: float = Field(default=300.0, gt=0)
     reconciliation_retry_failed: bool = False
+    reconciliation_max_attempts: int = Field(default=3, ge=1, le=20)
 
     # --- Fetch proxy validation limits ---
     max_classes_per_request: int = Field(default=50, ge=1)

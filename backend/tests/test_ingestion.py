@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 import math
 
 from app.ingestion.pipeline import IngestionPipeline
 from app.models.ingestion import IngestionState
 from app.utils import Clock
+from PIL import Image
 from tests.support import (
     FakeEmbeddings,
     FakeObjectStore,
@@ -98,9 +100,12 @@ async def test_reingestion_is_idempotent_and_preserves_created_at() -> None:
     second = await pipeline.ingest_job("fetch-test-001")
 
     assert first.indexed == 1
+    assert first.duplicates == 0
+    assert first.attempts == 1
     assert second.status == IngestionState.INDEXED
-    assert second.indexed == 1
+    assert second.indexed == 0
     assert second.duplicates == 1
+    assert second.attempts == 2
     assert len(vectors.records) == 1
     assert vectors.records[sha(data)].created_at == created_at
     assert len(embeddings.image_calls) == 1
@@ -111,7 +116,7 @@ async def test_duplicate_images_inside_one_manifest_are_counted_once() -> None:
     pipeline, _, embeddings, vectors = build_pipeline([image_entry(data), image_entry(data)])
     status = await pipeline.ingest_job("fetch-test-001")
     assert status.status == IngestionState.INDEXED
-    assert status.indexed == 2
+    assert status.indexed == 1
     assert status.duplicates == 1
     assert len(vectors.records) == 1
     assert len(embeddings.image_calls) == 1
@@ -124,7 +129,7 @@ async def test_one_bad_image_does_not_fail_the_job() -> None:
     pipeline, _, _, vectors = build_pipeline([image_entry(good), bad_entry])
     status = await pipeline.ingest_job("fetch-test-001")
 
-    assert status.status == IngestionState.INDEXED
+    assert status.status == IngestionState.PARTIAL
     assert status.indexed == 1
     assert status.failed == 1
     assert status.errors[0].stage == "validate"
@@ -231,3 +236,58 @@ async def test_configured_pixel_limit_fails_ingestion() -> None:
     assert "pixel count 192" in status.errors[0].reason
     assert embeddings.image_calls == []
     assert vectors.records == {}
+
+
+async def test_partial_job_retry_only_reprocesses_failed_images() -> None:
+    good = png_bytes("olive")
+    bad = png_bytes("navy")
+    bad_entry = image_entry(bad, sha256="a" * 64, image_id="a" * 64)
+    pipeline, objects, embeddings, vectors = build_pipeline([image_entry(good), bad_entry])
+
+    first = await pipeline.ingest_job("fetch-test-001")
+    assert first.status == IngestionState.PARTIAL
+    assert first.indexed == 1
+    assert first.failed == 1
+    assert first.attempts == 1
+
+    # Simulate a recovered source: fix the manifest's SHA for the previously
+    # failed image, then retry the same job.
+    key = make_settings().manifest_key("fetch-test-001")
+    document = json.loads(objects.objects[key])
+    document["images"][1]["sha256"] = sha(bad)
+    document["images"][1]["imageId"] = sha(bad)
+    objects.objects[key] = json.dumps(document).encode()
+
+    second = await pipeline.ingest_job("fetch-test-001")
+    assert second.status == IngestionState.INDEXED
+    assert second.indexed == 1  # only the previously failed image was embedded
+    assert second.duplicates == 1  # the already-indexed image was skipped
+    assert second.failed == 0
+    assert second.attempts == 2
+    assert len(vectors.records) == 2
+    assert len(embeddings.image_calls) == 2
+
+
+async def test_pipeline_sends_resized_image_to_embedding() -> None:
+    data = png_bytes("salmon", size=(2000, 1500))
+    entry = image_entry(data)
+    entry["width"] = 2000
+    entry["height"] = 1500
+    settings = make_settings(ingest_embedding_max_dimension=512)
+    pipeline, _, embeddings, vectors = build_pipeline([entry], settings=settings)
+
+    status = await pipeline.ingest_job("fetch-test-001")
+
+    assert status.status == IngestionState.INDEXED
+    assert len(embeddings.image_calls) == 1
+    sent_bytes, sent_mime = embeddings.image_calls[0]
+    assert sent_bytes != data  # original bytes were not sent to llama.cpp
+    assert sent_mime == "image/jpeg"
+    with Image.open(io.BytesIO(sent_bytes)) as image:
+        assert max(image.size) <= 512
+
+    record = vectors.records[sha(data)]
+    assert record.sha256 == sha(data)  # MinIO object/hash unchanged
+    assert record.object_key == f"images/bank-mas/{sha(data)}.png"
+    assert record.content_type == "image/png"  # original technical metadata
+    assert (record.width, record.height) == (2000, 1500)

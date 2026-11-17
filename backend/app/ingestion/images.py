@@ -6,7 +6,7 @@ import io
 import warnings
 from dataclasses import dataclass
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 ALLOWED_IMAGE_MIME = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
@@ -74,3 +74,61 @@ def inspect_image(data: bytes, *, max_pixels: int = DEFAULT_MAX_IMAGE_PIXELS) ->
     if mime not in ALLOWED_IMAGE_MIME:
         raise ImageValidationError(f"unsupported image format: {fmt or 'unknown'}")
     return ImageInfo(mime_type=mime, width=width, height=height, format=fmt)
+
+
+def _has_alpha(image: Image.Image) -> bool:
+    return image.mode in {"RGBA", "LA", "PA"} or "transparency" in image.info
+
+
+def prepare_embedding_image(
+    data: bytes,
+    content_type: str,
+    *,
+    max_dimension: int,
+) -> tuple[bytes, str]:
+    """Return an embedding-sized copy of an already validated image.
+
+    Images whose longest side fits within `max_dimension` are returned unchanged
+    so normal-size files are not re-encoded. Larger images are EXIF-orientation
+    corrected, downscaled with LANCZOS, and re-encoded as PNG when alpha is
+    present or JPEG otherwise. Original MinIO object, hash, and metadata are
+    untouched by this helper.
+    """
+    if max_dimension <= 0:
+        raise ValueError("max_dimension must be positive")
+    normalized_mime = (content_type or "").split(";")[0].strip().lower()
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            width, height = source.size
+            if width <= 0 or height <= 0:
+                raise ImageValidationError("image has invalid dimensions")
+            if max(width, height) <= max_dimension:
+                return data, normalized_mime
+
+            # JPEG draft mode decodes at a reduced DCT scale when possible,
+            # lowering peak memory before the resized copy is produced.
+            if (source.format or "").upper() == "JPEG":
+                try:
+                    source.draft("RGB", (max_dimension, max_dimension))
+                except (OSError, ValueError):
+                    pass
+
+            source.load()
+            image = ImageOps.exif_transpose(source)
+            image.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+
+            buffer = io.BytesIO()
+            if _has_alpha(image):
+                if image.mode != "RGBA":
+                    image = image.convert("RGBA")
+                image.save(buffer, format="PNG", optimize=True)
+                return buffer.getvalue(), "image/png"
+
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+            image.save(buffer, format="JPEG", quality=85, optimize=True)
+            return buffer.getvalue(), "image/jpeg"
+    except ImageValidationError:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise ImageValidationError("object cannot be decoded as an image") from exc

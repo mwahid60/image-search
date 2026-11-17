@@ -30,12 +30,27 @@ def add_manifest(objects: FakeObjectStore, settings, job_id: str, images=None, *
     objects.objects[settings.manifest_key(job_id)] = json.dumps(document).encode()
 
 
-def add_status(objects: FakeObjectStore, settings, job_id: str, state: str) -> None:
+def add_status(
+    objects: FakeObjectStore,
+    settings,
+    job_id: str,
+    state: str,
+    *,
+    attempts: int = 0,
+    indexed: int | None = None,
+    duplicates: int = 0,
+    failed: int = 0,
+) -> None:
+    if indexed is None:
+        indexed = 1 if state in {"INDEXED", "PARTIAL"} else 0
     status = IngestionStatus(
         job_id=job_id,
         status=IngestionState(state),
         total_images=1,
-        indexed=1 if state == "INDEXED" else 0,
+        indexed=indexed,
+        duplicates=duplicates,
+        failed=failed,
+        attempts=attempts,
     )
     objects.objects[settings.ingestion_status_key(job_id)] = status.model_dump_json(
         by_alias=True
@@ -198,3 +213,100 @@ async def test_list_failure_is_reported_without_raising() -> None:
     report = await service.run_once()
     assert report.errors == 1
     assert queue.enqueued == []
+
+
+async def test_partial_status_is_retried_until_attempt_limit() -> None:
+    settings = make_settings()
+    objects = FakeObjectStore()
+    add_manifest(objects, settings, JOB_A)
+    add_status(
+        objects,
+        settings,
+        JOB_A,
+        "PARTIAL",
+        attempts=1,
+        indexed=1,
+        failed=1,
+    )
+    service, queue = build(objects)
+    report = await service.run_once()
+    assert report.enqueued == 1
+    assert queue.enqueued == [(JOB_A, False)]
+
+    add_status(
+        objects,
+        settings,
+        JOB_A,
+        "PARTIAL",
+        attempts=settings.reconciliation_max_attempts,
+        indexed=1,
+        failed=1,
+    )
+    service, queue = build(objects)
+    report = await service.run_once()
+    assert report.enqueued == 0
+    assert queue.enqueued == []
+
+
+async def test_partial_retry_limit_is_configurable() -> None:
+    settings = make_settings(reconciliation_max_attempts=5)
+    objects = FakeObjectStore()
+    add_manifest(objects, settings, JOB_A)
+    add_status(objects, settings, JOB_A, "PARTIAL", attempts=3, indexed=1, failed=1)
+    service, _queue = build(objects, reconciliation_max_attempts=5)
+    report = await service.run_once()
+    assert report.enqueued == 1
+
+
+async def test_failed_retry_also_respects_attempt_limit() -> None:
+    settings = make_settings(reconciliation_retry_failed=True)
+    objects = FakeObjectStore()
+    add_manifest(objects, settings, JOB_A)
+    add_status(
+        objects,
+        settings,
+        JOB_A,
+        "FAILED",
+        attempts=settings.reconciliation_max_attempts,
+        failed=1,
+    )
+    service, queue = build(objects, reconciliation_retry_failed=True)
+    report = await service.run_once()
+    assert report.enqueued == 0
+    assert queue.enqueued == []
+
+
+async def test_stale_ingesting_is_bounded_by_attempt_limit() -> None:
+    settings = make_settings()
+    objects = FakeObjectStore()
+    add_manifest(objects, settings, JOB_A)
+    add_status(
+        objects,
+        settings,
+        JOB_A,
+        "INGESTING",
+        attempts=settings.reconciliation_max_attempts,
+    )
+    service, queue = build(objects)
+    report = await service.run_once()
+    assert report.enqueued == 0
+    assert queue.enqueued == []
+
+
+async def test_legacy_indexed_record_with_failures_is_retried() -> None:
+    settings = make_settings()
+    objects = FakeObjectStore()
+    add_manifest(objects, settings, JOB_A)
+    add_status(
+        objects,
+        settings,
+        JOB_A,
+        "INDEXED",
+        attempts=1,
+        indexed=1,
+        failed=1,
+    )
+    service, queue = build(objects)
+    report = await service.run_once()
+    assert report.enqueued == 1
+    assert queue.enqueued == [(JOB_A, False)]

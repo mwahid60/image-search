@@ -59,9 +59,9 @@ def store_job(settings, objects, *, job_id: str = JOB, ingestion_state: str | No
             job_id=job_id,
             status=IngestionState(ingestion_state),
             total_images=1,
-            indexed=1 if ingestion_state == "INDEXED" else 0,
+            indexed=1 if ingestion_state in {"INDEXED", "PARTIAL"} else 0,
             duplicates=0,
-            failed=0,
+            failed=1 if ingestion_state == "PARTIAL" else 0,
             errors=[],
             started_at="2026-11-16T11:00:00Z",
             completed_at="2026-11-16T11:01:00Z",
@@ -198,7 +198,7 @@ def test_aggregated_status_includes_ingestion_errors() -> None:
     store_job(container.settings, objects)
     status = IngestionStatus(
         job_id=JOB,
-        status=IngestionState.INDEXED,
+        status=IngestionState.PARTIAL,
         total_images=2,
         indexed=1,
         duplicates=0,
@@ -212,6 +212,7 @@ def test_aggregated_status_includes_ingestion_errors() -> None:
     with TestClient(app) as client:
         response = client.get(f"/api/v1/fetch-jobs/{JOB}")
     body = response.json()
+    assert body["ingestionStatus"] == "PARTIAL"
     assert body["failed"] == 1
     assert body["errors"][0]["stage"] == "embedding"
 
@@ -234,6 +235,28 @@ def test_manual_ingest_enqueues_with_force() -> None:
     assert first.json()["status"] == "ENQUEUED"
     assert second.status_code == 202
     assert second.json()["status"] == "ALREADY_RUNNING"
+    assert container.queue.is_active(JOB)
+
+
+def test_manual_ingest_bypasses_automatic_attempt_limit() -> None:
+    app, container, _, objects, *_ = build()
+    store_job(container.settings, objects, ingestion_state="PARTIAL")
+    status = IngestionStatus(
+        job_id=JOB,
+        status=IngestionState.PARTIAL,
+        total_images=2,
+        indexed=1,
+        failed=1,
+        attempts=99,
+        errors=[IngestionError(stage="embedding", reason="boom")],
+    )
+    objects.objects[container.settings.ingestion_status_key(JOB)] = status.model_dump_json(
+        by_alias=True
+    ).encode()
+    with TestClient(app) as client:
+        response = client.post(f"/api/v1/ingest/{JOB}")
+    assert response.status_code == 202
+    assert response.json()["status"] == "ENQUEUED"
     assert container.queue.is_active(JOB)
 
 

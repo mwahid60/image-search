@@ -178,18 +178,26 @@ class ReconciliationService:
         if not manifest.images:
             return False
 
-        status = await self._read_status(job_id)
-        if status is not None:
-            if status.status == IngestionState.INDEXED:
-                return False
-            if status.status == IngestionState.FAILED and not retry_failed:
-                return False
-            if status.status == IngestionState.INGESTING:
-                cached = self._pipeline.cached_status(job_id)
-                if cached is not None and self._queue.is_active(job_id):
-                    return False
         if self._queue.is_active(job_id):
             return False
+
+        status = await self._read_status(job_id)
+        if status is not None:
+            state = status.effective_state
+            if state == IngestionState.INDEXED:
+                return False
+            if state == IngestionState.FAILED and not retry_failed:
+                return False
+            # Bounded automatic recovery: every attempt increments the persisted
+            # counter, so a permanent failure stops being retried by reconciliation.
+            if status.attempts >= self._settings.reconciliation_max_attempts:
+                logger.info(
+                    "Skipping automatic retry for job %s: attempts=%s >= %s",
+                    job_id,
+                    status.attempts,
+                    self._settings.reconciliation_max_attempts,
+                )
+                return False
 
         result = await self._queue.enqueue(job_id, manifest_key=manifest_key)
         return result.enqueued

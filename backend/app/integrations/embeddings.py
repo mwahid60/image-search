@@ -6,8 +6,10 @@ No title, tags, class name, caption, or evaluation metadata is ever sent to the 
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import math
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 import httpx
@@ -31,13 +33,22 @@ class EmbeddingsClient(Protocol):
     async def close(self) -> None: ...
 
 
+SleepFunc = Callable[[float], Awaitable[None]]
+
+
 class LlamaCppEmbeddingsClient:
-    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        client: httpx.AsyncClient | None = None,
+        sleep: SleepFunc | None = None,
+    ) -> None:
         self._settings = settings
         self._client = client or httpx.AsyncClient(
             base_url=settings.llama_base_url,
             timeout=httpx.Timeout(settings.llama_timeout_seconds),
         )
+        self._sleep: SleepFunc = sleep or asyncio.sleep
 
     def image_payload(self, image_bytes: bytes, content_type: str) -> dict[str, Any]:
         mime = (content_type or "").split(";")[0].strip().lower()
@@ -84,33 +95,82 @@ class LlamaCppEmbeddingsClient:
         return await self._embed(self.text_payload(query))
 
     async def _embed(self, payload: dict[str, Any]) -> list[float]:
-        try:
-            response = await self._client.post("/v1/embeddings", json=payload)
-        except httpx.TimeoutException as exc:
-            raise EmbeddingError(
-                "Embedding request timed out", code="EMBEDDING_TIMEOUT", status_code=504
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise EmbeddingError(
-                "Embedding service is unavailable",
-                code="EMBEDDING_UNAVAILABLE",
-                status_code=503,
-            ) from exc
+        """POST embeddings with bounded retries for transient failures.
 
-        if response.status_code != 200:
-            logger.warning("llama.cpp embeddings returned status %s", response.status_code)
-            raise EmbeddingError(
-                f"Embedding service returned status {response.status_code}",
-                code="EMBEDDING_UPSTREAM_ERROR",
-                status_code=502,
+        Retried: HTTP 503, timeouts, and connection/transport errors.
+        Not retried: other HTTP statuses (including 400/422) and malformed
+        responses. The request payload (image base64) is never logged.
+        """
+        attempts = self._settings.embedding_max_attempts
+        backoff = min(
+            self._settings.embedding_retry_initial_seconds,
+            self._settings.embedding_retry_max_seconds,
+        )
+        last_error: EmbeddingError | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                response = await self._client.post("/v1/embeddings", json=payload)
+            except httpx.TimeoutException:
+                last_error = EmbeddingError(
+                    f"Embedding request timed out after {attempt} attempt(s)",
+                    code="EMBEDDING_TIMEOUT",
+                    status_code=504,
+                )
+            except httpx.TransportError:
+                last_error = EmbeddingError(
+                    f"Embedding service is unavailable (attempt {attempt}/{attempts})",
+                    code="EMBEDDING_UNAVAILABLE",
+                    status_code=503,
+                )
+            except httpx.HTTPError as exc:
+                raise EmbeddingError(
+                    "Embedding request failed",
+                    code="EMBEDDING_UNAVAILABLE",
+                    status_code=503,
+                ) from exc
+            else:
+                if response.status_code == 200:
+                    try:
+                        body = response.json()
+                    except ValueError as exc:
+                        raise EmbeddingError(
+                            "Embedding response is not valid JSON",
+                            code="INVALID_EMBEDDING_RESPONSE",
+                        ) from exc
+                    return self._parse_vector(body)
+                if response.status_code == 503:
+                    last_error = EmbeddingError(
+                        f"Embedding service returned status 503 after {attempt} attempt(s)",
+                        code="EMBEDDING_UNAVAILABLE",
+                        status_code=503,
+                    )
+                else:
+                    logger.warning(
+                        "llama.cpp embeddings returned non-retryable status %s",
+                        response.status_code,
+                    )
+                    raise EmbeddingError(
+                        f"Embedding service returned status {response.status_code}",
+                        code="EMBEDDING_UPSTREAM_ERROR",
+                        status_code=502,
+                    )
+
+            if attempt == attempts:
+                break
+            logger.warning(
+                "Embedding attempt %d/%d failed (%s); retrying in %.2fs",
+                attempt,
+                attempts,
+                last_error.code if last_error else "UNKNOWN",
+                backoff,
             )
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise EmbeddingError(
-                "Embedding response is not valid JSON", code="INVALID_EMBEDDING_RESPONSE"
-            ) from exc
-        return self._parse_vector(body)
+            await self._sleep(backoff)
+            backoff = min(backoff * 2, self._settings.embedding_retry_max_seconds)
+
+        if last_error is None:  # pragma: no cover - defensive guard
+            raise EmbeddingError("Embedding request failed", code="EMBEDDING_ERROR")
+        raise last_error
 
     def _parse_vector(self, body: Any) -> list[float]:
         vector: Any = None
