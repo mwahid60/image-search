@@ -1,0 +1,63 @@
+flowchart TB
+    subgraph FETCH["1. FETCH DAN INDEX GAMBAR"]
+        direction TB
+
+        subgraph FETCH_ROW_1["Ambil gambar"]
+            direction LR
+            F1["Klik<br/>Fetch Images"] -->|"Kelas + jumlah"| F2["FastAPI<br/>Buat fetch job"]
+            F2 --> F3["Java Fetcher<br/>Jalankan job"]
+            F3 --> F4["Openverse<br/>Cari gambar"]
+        end
+
+        subgraph FETCH_ROW_2["Simpan gambar"]
+            direction LR
+            F5["Download<br/>dan validasi"] --> F6[("MinIO<br/>Simpan gambar")]
+            F6 --> F7["Manifest<br/>Simpan daftar gambar"]
+            F7 --> F8["SSE<br/>Kirim fetch selesai"]
+        end
+
+        subgraph FETCH_ROW_3["Index gambar"]
+            direction LR
+            F9["FastAPI<br/>Terima event"] --> F10["Antrean<br/>Ingestion"]
+            F10 --> F11["llama.cpp<br/>Embedding gambar"]
+            F11 --> F12[("Milvus<br/>Simpan vector")]
+        end
+
+        F4 -->|"URL gambar"| F5
+        F8 --> F9
+        F3 -.->|"202 + jobId"| F13["Cek status<br/>sampai INDEXED"]
+        F12 -.-> F13
+    end
+
+    subgraph SEARCH["2. CARI GAMBAR"]
+        direction TB
+
+        subgraph SEARCH_ROW_1["Cari vector yang mirip"]
+            direction LR
+            S1["Klik Search"] -->|"Teks + topK"| S2["FastAPI<br/>Terima pencarian"]
+            S2 --> S3["llama.cpp<br/>Embedding teks"]
+            S3 --> S4[("Milvus<br/>Cari kemiripan")]
+        end
+
+        subgraph SEARCH_ROW_2["Tampilkan hasil"]
+            direction LR
+            S5["Hasil pencarian<br/>Metadata + imageUrl"] --> S6["FastAPI<br/>Ambil gambar"]
+            S6 --> S7[("MinIO<br/>Baca file gambar")]
+            S7 --> S8["Tampilkan<br/>gambar + atribusi"]
+        end
+
+        S4 -->|"Hasil terurut"| S5
+    end
+
+    F12 ==>|"Vector siap dicari"| S4
+    F6 ==>|"File yang ditampilkan"| S7
+
+    classDef fetchNode fill:#E8F1FB,stroke:#356A9A,color:#172B3A;
+    classDef searchNode fill:#EAF6EE,stroke:#3D7A52,color:#173321;
+    classDef storageNode fill:#FFF3D6,stroke:#9A741C,color:#3D2E08;
+    classDef statusNode fill:#FDECEC,stroke:#A94A4A,color:#421B1B;
+
+    class F1,F2,F3,F4,F5,F7,F8,F9,F10,F11 fetchNode;
+    class S1,S2,S3,S5,S6,S8 searchNode;
+    class F6,F12,S4,S7 storageNode;
+    class F13 statusNode;
