@@ -1,63 +1,82 @@
-flowchart TB
-    subgraph FETCH["1. FETCH DAN INDEX GAMBAR"]
+%% Dua flow berdampingan dengan cabang ke service dan storage.
+%% Edge luar Python Services mengarah ke grup agar arah internal tetap LR.
+flowchart LR
+    subgraph FETCH["A. FETCHING DAN INGESTION"]
         direction TB
 
-        subgraph FETCH_ROW_1["Ambil gambar"]
+        U1["User / Reviewer"]
+        ST1["Streamlit Fetch Images<br/>kelas + jumlah gambar"]
+        JAVA["Java Spring Boot Fetcher<br/>job background + download<br/>validasi + deduplikasi"]
+        OV["Openverse API<br/>search + pagination"]
+        DB1[("MinIO<br/>gambar + manifest<br/>ingestion status")]
+        MODEL1["llama.cpp<br/>EmbeddingGemma 2 + mmproj<br/>image embedding"]
+        VECTOR1[("Milvus<br/>vector 768d + metadata<br/>idempotent upsert")]
+        RECON["Reconciliation<br/>startup + berkala"]
+
+        subgraph PYTHON1["Python Services<br/>satu backend FastAPI"]
             direction LR
-            F1["Klik<br/>Fetch Images"] -->|"Kelas + jumlah"| F2["FastAPI<br/>Buat fetch job"]
-            F2 --> F3["Java Fetcher<br/>Jalankan job"]
-            F3 --> F4["Openverse<br/>Cari gambar"]
+            API1["Python API Service<br/>POST fetch-jobs + polling status"]
+            PY["Python Ingestion Pipeline<br/>SSE + queue + validasi + resize"]
+            API1 -->|"enqueue jobId"| PY
         end
 
-        subgraph FETCH_ROW_2["Simpan gambar"]
-            direction LR
-            F5["Download<br/>dan validasi"] --> F6[("MinIO<br/>Simpan gambar")]
-            F6 --> F7["Manifest<br/>Simpan daftar gambar"]
-            F7 --> F8["SSE<br/>Kirim fetch selesai"]
-        end
-
-        subgraph FETCH_ROW_3["Index gambar"]
-            direction LR
-            F9["FastAPI<br/>Terima event"] --> F10["Antrean<br/>Ingestion"]
-            F10 --> F11["llama.cpp<br/>Embedding gambar"]
-            F11 --> F12[("Milvus<br/>Simpan vector")]
-        end
-
-        F4 -->|"URL gambar"| F5
-        F8 --> F9
-        F3 -.->|"202 + jobId"| F13["Cek status<br/>sampai INDEXED"]
-        F12 -.-> F13
+        U1 -->|"Fetch Images"| ST1
+        ST1 -->|"kelas + jumlah"| PYTHON1
+        PYTHON1 -->|"POST fetch job"| JAVA
+        JAVA -->|"search + download"| OV
+        JAVA -->|"simpan gambar + manifest"| DB1
+        JAVA -->|"SSE fetch.completed"| PYTHON1
+        DB1 -->|"baca gambar + manifest"| PYTHON1
+        RECON -.->|"fallback SSE terlewat"| PYTHON1
+        PYTHON1 -->|"image bytes"| MODEL1
+        MODEL1 -->|"image vector"| PYTHON1
+        PYTHON1 -->|"L2 normalize + upsert"| VECTOR1
+        PYTHON1 -->|"INDEXED / PARTIAL / FAILED"| DB1
+        JAVA -.->|"runtime status"| PYTHON1
+        DB1 -.->|"manifest + status"| PYTHON1
+        PYTHON1 -.->|"fetchStatus + ingestionStatus"| ST1
     end
 
-    subgraph SEARCH["2. CARI GAMBAR"]
+    subgraph SEARCH["B. ONLINE SEARCH"]
         direction TB
 
-        subgraph SEARCH_ROW_1["Cari vector yang mirip"]
-            direction LR
-            S1["Klik Search"] -->|"Teks + topK"| S2["FastAPI<br/>Terima pencarian"]
-            S2 --> S3["llama.cpp<br/>Embedding teks"]
-            S3 --> S4[("Milvus<br/>Cari kemiripan")]
-        end
+        U2["User / Reviewer"]
+        ST2["Streamlit Search<br/>query + topK + image grid"]
+        API2["Python SearchService<br/>FastAPI backend<br/>POST search + validasi"]
+        MODEL2["llama.cpp<br/>EmbeddingGemma 2<br/>text embedding"]
+        VECTOR2[("Milvus<br/>top-k cosine search")]
+        IMAGE["Python Image Service<br/>FastAPI backend yang sama<br/>GET images/{imageId}"]
+        DB2[("MinIO<br/>image storage")]
+        NOTE["Tanpa Openverse / Java<br/>evaluation_metadata tidak dipakai"]
 
-        subgraph SEARCH_ROW_2["Tampilkan hasil"]
-            direction LR
-            S5["Hasil pencarian<br/>Metadata + imageUrl"] --> S6["FastAPI<br/>Ambil gambar"]
-            S6 --> S7[("MinIO<br/>Baca file gambar")]
-            S7 --> S8["Tampilkan<br/>gambar + atribusi"]
-        end
-
-        S4 -->|"Hasil terurut"| S5
+        U2 -->|"natural-language query"| ST2
+        ST2 -->|"search request"| API2
+        API2 -->|"text query"| MODEL2
+        MODEL2 -->|"text vector + L2 normalize"| API2
+        API2 -->|"top-k query"| VECTOR2
+        VECTOR2 -->|"imageId + score + atribusi"| API2
+        API2 -->|"search results + imageUrl"| ST2
+        ST2 -->|"image grid"| U2
+        ST2 -->|"request imageUrl"| IMAGE
+        IMAGE -->|"cari objectKey"| VECTOR2
+        IMAGE -->|"ambil gambar"| DB2
+        DB2 -->|"image bytes"| IMAGE
+        IMAGE -->|"image response"| ST2
+        API2 ~~~ NOTE
     end
 
-    F12 ==>|"Vector siap dicari"| S4
-    F6 ==>|"File yang ditampilkan"| S7
+    FETCH ~~~ SEARCH
 
-    classDef fetchNode fill:#E8F1FB,stroke:#356A9A,color:#172B3A;
-    classDef searchNode fill:#EAF6EE,stroke:#3D7A52,color:#173321;
-    classDef storageNode fill:#FFF3D6,stroke:#9A741C,color:#3D2E08;
-    classDef statusNode fill:#FDECEC,stroke:#A94A4A,color:#421B1B;
+    classDef fetchNode fill:#EFE9FB,stroke:#7C5CBF,stroke-width:1.5px,color:#2B1B4A;
+    classDef searchNode fill:#E4F5EC,stroke:#3F8A64,stroke-width:1.5px,color:#133326;
+    classDef storageNode fill:#FFF4D6,stroke:#B08927,stroke-width:1.5px,color:#3A2C08;
+    classDef modelNode fill:#DCF0D8,stroke:#4C7F3F,stroke-width:1.5px,color:#1B3016;
+    classDef noteNode fill:#F4F4F6,stroke:#8A8A93,stroke-width:1px,color:#33333A;
 
-    class F1,F2,F3,F4,F5,F7,F8,F9,F10,F11 fetchNode;
-    class S1,S2,S3,S5,S6,S8 searchNode;
-    class F6,F12,S4,S7 storageNode;
-    class F13 statusNode;
+    class U1,ST1,API1,JAVA,PY,RECON fetchNode;
+    class U2,ST2,API2,IMAGE searchNode;
+    class DB1,VECTOR1,DB2,VECTOR2 storageNode;
+    class MODEL1,MODEL2 modelNode;
+    class OV,NOTE noteNode;
+
+    style PYTHON1 fill:#F8F4FF,stroke:#7C5CBF,stroke-width:2px,color:#2B1B4A;

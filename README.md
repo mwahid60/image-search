@@ -2,19 +2,6 @@
 
 Mini image search untuk take-home assignment Machine Learning Engineer Bank MAS. Sistem mengambil gambar dari Openverse, menyimpannya di MinIO, membuat image embedding dari piksel gambar dengan EmbeddingGemma 2 melalui llama.cpp, menyimpan vector dan metadata di Milvus Lite, lalu menyediakan pencarian natural-language melalui Streamlit.
 
-Dokumen kontrak dan keputusan desain ada di [docs/rencana-implementasi.md](docs/rencana-implementasi.md) dan [docs/api-spec.md](docs/api-spec.md). README ini fokus pada cara menjalankan stack secara lokal dan batasannya.
-
-> **Status jujur:** branch `feature/deployment-tooling` hanya berisi deployment, script operasional, dan dokumentasi. Source `fetcher/`, `backend/`, dan `frontend/` dikerjakan di branch lain dan belum tersedia saat Containerfile ini ditulis. Image backend dan frontend sudah pernah di-build dan di-smoke-boot secara terpisah, tetapi stack penuh belum dijalankan end-to-end. Validasi yang benar-benar dilakukan tercatat di bagian [Validasi](#validasi). Tidak ada screenshot, jumlah gambar, metrik retrieval, atau klaim performa di README ini.
-
-## Peringatan Keamanan: Bukan untuk Ekspos Publik
-
-> **Stack ini tidak memiliki authentication, authorization, TLS, atau rate limiting di service mana pun.** Port hanya relatif aman karena di-bind ke `127.0.0.1`.
-
-- **Jangan ubah `BIND_ADDRESS` dari `127.0.0.1`** dan jangan publish port `8000`, `8080`, `8081`, `8501`, `9000`, atau `9001` ke jaringan lokal bersama, VPS, atau internet tanpa reverse proxy yang menyediakan authentication dan TLS.
-- **Wajib ganti `MINIO_ROOT_USER` dan `MINIO_ROOT_PASSWORD` default**, bahkan untuk environment non-local. Nilai di `.env.example` adalah placeholder, bukan credentials yang aman.
-- `PUBLIC_API_BASE_URL` boleh diarahkan ke host lain **hanya setelah** reverse proxy yang menyediakan authentication dan TLS tersedia.
-- Stack ini adalah demo take-home, **bukan sistem production-ready**.
-
 ## Arsitektur
 
 ```mermaid
@@ -43,6 +30,9 @@ flowchart LR
     PY -- "results + image bytes" --> ST
 ```
 
+## Flow Fetch & Search
+![flow fetch & search](docs/flow.png)
+
 Prinsip utama:
 
 - Pencarian hanya memakai vector dari piksel gambar dan query user. Title, tags, dan nama kelas Openverse hanya berada di `evaluation_metadata` dan tidak dipakai untuk embedding, filter, ranking, atau reranking.
@@ -50,6 +40,30 @@ Prinsip utama:
 - Python menangani API, SSE consumer, ingestion, Milvus, search, dan streaming gambar.
 - llama.cpp hanya inference service; tidak mengakses MinIO atau Milvus.
 - Milvus Lite berjalan di dalam proses backend, sehingga tidak ada service Milvus, etcd, PostgreSQL, Redis, atau RabbitMQ.
+
+## Keputusan desain
+
+**Representasi gambar: image embedding dari piksel, bukan caption atau label.**
+
+Pilihan ini diambil karena tiga alasan. 
+1. caption generator menambah satu model generatif yang jauh lebih berat di CPU dan kualitas captionnya menjadi batas atas kualitas search. 
+2. label kelas tidak memenuhi aturan brief karena nama kelas berasal dari query fetching, bukan dari piksel. 
+3. embedding memungkinkan query bahasa alami langsung dibandingkan dengan gambar tanpa pencocokan kata kunci, sehingga query seperti `a dog playing in the snow` tetap bekerja tanpa daftar label tetap.
+
+**Model: EmbeddingGemma 2 (Q4_K_XL + mmproj Q8_0) melalui llama.cpp.**
+
+Alternatif yang dipertimbangkan adalah CLIP ViT-B/32. CLIP lebih kecil (sekitar 151M parameter, vector 512 dimensi, context teks 77 token) dan lebih sederhana karena image dan text encoder tersedia langsung di Python. EmbeddingGemma 2 dipilih karena beberapa alasan praktis:
+
+- Context 8.192 token jauh lebih longgar untuk query deskriptif panjang, dibanding 77 token pada CLIP.
+- Model mendukung 100+ bahasa, sehingga query bahasa Indonesia tetap masuk akal.
+- Format GGUF memungkinkan inferensi CPU tanpa PyTorch, dengan footprint bobot sekitar 700 MB untuk dua file yang dipakai.
+- Runtime llama.cpp sudah menjadi satu service terpisah, sehingga backend Python tidak perlu memuat model ke dalam prosesnya.
+
+Trade-off yang diterima: EmbeddingGemma 2 lebih berat secara arsitektur (sekitar 440M parameter untuk komponen text+vision), integrasinya lebih sensitif terhadap versi llama.cpp, dan kualitasnya belum dibandingkan secara empiris dengan CLIP pada dataset ini. Repository ini tidak mengklaim salah satu model lebih baik tanpa pengukuran retrieval.
+
+**Penyimpanan: MinIO, bukan folder lokal.**
+
+Brief membolehkan folder lokal. Implementasi memakai MinIO karena objek gambar perlu dibaca oleh dua proses berbeda (Java dan Python) dan manifest job harus tetap ada setelah container restart. Ini asumsi yang dicatat sesuai instruksi brief. Lokasi object tetap deterministik: `images/bank-mas/{sha256}.{ext}`.
 
 ## Komponen dan port
 
@@ -61,13 +75,11 @@ Prinsip utama:
 | `backend` | `deploy/Containerfile.backend` | `127.0.0.1:8000` | FastAPI + Milvus Lite |
 | `frontend` | `deploy/Containerfile.frontend` | `127.0.0.1:8501` | Streamlit, dua halaman |
 
-Semua port di-bind ke `127.0.0.1` secara default. **Jangan ubah `BIND_ADDRESS`** kecuali reverse proxy yang menyediakan authentication dan TLS sudah ada. Lihat [Peringatan Keamanan](#peringatan-keamanan-bukan-untuk-ekspos-publik).
-
 ## Prerequisites (fresh machine)
 
 - Podman 5.x dan Podman Compose (plugin/provider `podman compose`, atau `podman-compose` 1.x).
-- `curl` untuk mengunduh model.
-- Python 3.10+ di host, hanya untuk menjalankan smoke test (script memakai standard library).
+- Python 3.10+ di host untuk mengunduh model dan menjalankan smoke test (script memakai standard library).
+- `curl` hanya diperlukan jika memilih script Bash alternatif untuk mengunduh model.
 - Ruang disk minimal sekitar 5 GB untuk image container, model (~730 MB), dan data.
 - RAM: default compose dituning untuk Podman VM 2 GB (context/batch 2048, satu sequence, satu ingestion worker). 2 GB tetap sangat ketat dan OOM masih mungkin terjadi, terutama untuk gambar besar atau ingestion berturut-turut; 8 GB lebih nyaman dan 16 GB lega. Ini pedoman, bukan hasil benchmark.
 - Tidak perlu GPU, Docker Desktop, Java, Maven, atau `uv` di host. Build Java dan Python dilakukan di container.
@@ -95,10 +107,22 @@ Nilai di `.env.example` adalah placeholder lokal yang aman, bukan credentials as
 ### 2. Unduh model
 
 ```bash
+# Windows (PowerShell atau Command Prompt)
+py scripts/download_models.py
+# Jika launcher py tidak tersedia:
+python scripts/download_models.py
+
+# macOS / Linux
+python3 scripts/download_models.py
+```
+
+Alternatif untuk macOS/Linux dengan `curl`:
+
+```bash
 ./scripts/download_models.sh
 ```
 
-Script mengunduh dua file dari `unsloth/embeddinggemma-2-GGUF` pada revision yang dipin, lalu memverifikasi ukuran dan SHA-256 sebelum memasangnya:
+Script Python maupun Bash mengunduh dua file dari `unsloth/embeddinggemma-2-GGUF` pada revision yang dipin, lalu memverifikasi ukuran dan SHA-256 sebelum memasangnya:
 
 | File | Ukuran | SHA-256 |
 |---|---|---|
@@ -317,26 +341,141 @@ Skenario integrasi manual minimal:
 
 ## Validasi
 
-Yang benar-benar dijalankan di branch ini (Podman 5.5.0, provider `podman-compose` 1.4.0, macOS):
+Yang benar-benar dijalankan:
 
-- `bash -n scripts/download_models.sh` - lolos, tidak ada error sintaks.
-- `python3 -m py_compile scripts/smoke_test_embeddings.py` - lolos.
-- `podman compose --env-file .env.example -f deploy/compose.yaml config` - exit 0. Build context `../fetcher`, `../backend`, dan `../frontend` ter-resolve ke direktori repo; mount model ter-resolve ke `<repo>/models`; port, env, dan healthcheck ter-render.
-- `podman-compose --dry-run up llama-embeddings` dan `up minio` - perintah container ter-render benar (volume model, healthcheck, argumen llama.cpp, network alias), tanpa pull atau start container. `x-podman.in_pod: false` terverifikasi menghasilkan `--network=...:alias=<service>` tanpa `--pod`.
-- `scripts/smoke_test_embeddings.py` diuji terhadap server HTTP mock lokal (bukan llama.cpp): skenario lolos mengembalikan exit 0, sedangkan jumlah vector yang salah dan checksum model yang salah mengembalikan exit 1. Ini memvalidasi alur script, bukan kualitas embedding.
-- Metadata model dan image dicek lewat API registry/Hugging Face (tag, digest, ukuran, SHA-256) tanpa menarik image atau mengunduh bobot model.
+**Test otomatis**
 
-Yang **belum** dilakukan: `podman compose up` untuk seluruh stack, download model penuh, dan uji end-to-end dengan Openverse. Image backend/frontend sudah pernah di-build dan di-smoke-boot terpisah. Jangan menganggap stack sudah terbukti berjalan hanya dari README ini.
+- `fetcher`: `mvn test` di container Maven 3.9.11 + Temurin 21 - **103 test lulus**, 0 gagal.
+- `backend`: `uv run pytest` - seluruh test lulus, termasuk Milvus Lite embedded.
+- `frontend`: `uv run pytest` - seluruh test lulus.
+- `backend`: `ruff check app` - lulus tanpa temuan.
+
+**End-to-end di VPS (Podman, Ubuntu 24.04)**
+
+- Build image `fetcher`, `backend`, dan `frontend` berhasil pada commit `1984cb1`.
+- `scripts/smoke_test_embeddings.py` terhadap llama.cpp nyata: vector 768 dimensi, norm 1.0, embedding gambar dan teks berbeda, exit 0.
+- Fetch job nyata dari Openverse sampai `fetchStatus=COMPLETED` dan `ingestionStatus=INDEXED`.
+- Retry ingestion pada job yang sama menghasilkan `indexed=0` dan `duplicates=1`, jadi idempotensi terbukti.
+- `POST /api/v1/search` dan `GET /api/v1/images/{imageId}` berhasil melalui gateway publik, mengembalikan `image/jpeg`.
+- Runtime status pada `/ready` menunjukkan Milvus, MinIO, llama.cpp, dan SSE consumer siap.
+
+**Konfigurasi**
+
+- `podman compose --env-file .env -f deploy/compose.yaml config` - exit 0.
+- `podman compose --env-file .env.vps -f deploy/compose.vps.yaml config --quiet` - exit 0 di VPS.
+
+Yang **belum** dilakukan: benchmark latency formal, load test, dan evaluasi dengan anotasi relevansi manual. `precision@10` sudah diukur, tetapi memakai weak labels dari `requestedClass`, bukan anotasi visual manual.
 
 ## Data dan kelas
 
-**Belum ada hasil fetching atau ingestion aktual.** Tabel di bawah adalah rencana kandidat kelas, bukan dataset yang sudah dikumpulkan. Jumlah gambar final, daftar kelas final, dan contoh query akan dicatat setelah fetching dijalankan dan diverifikasi.
+Dataset yang benar-benar di-ingest pada VPS saat validasi:
 
-| Rencana kelas (20) |
+| Item | Nilai |
+|---|---|
+| Fetch job | 5 |
+| Entri gambar di manifest | 1.295 |
+| Gambar unik di MinIO (`images/bank-mas/`) | 566 |
+| Kelas unik yang di-fetch | 25 |
+| Vector di Milvus | 566 |
+
+Kelas yang di-fetch saat validasi (25 kelas):
+
+| Kelas | Gambar di manifest | Vector unik di Milvus |
+|---|---:|---:|
+| beach | 27 | 27 |
+| bird | 65 | 22 |
+| boat | 65 | 22 |
+| bridge | 65 | 22 |
+| building | 65 | 22 |
+| car | 65 | 22 |
+| cat | 65 | 22 |
+| chair | 65 | 22 |
+| dog | 65 | 22 |
+| elephant | 65 | 23 |
+| fish | 27 | 26 |
+| flower | 65 | 22 |
+| goat | 65 | 22 |
+| horse | 65 | 23 |
+| mountain | 65 | 22 |
+| pie | 65 | 22 |
+| pizza | 65 | 22 |
+| rain | 27 | 27 |
+| red apple | 1 | 1 |
+| sail | 27 | 27 |
+| sea | 27 | 27 |
+| ship | 27 | 27 |
+| sunset | 27 | 27 |
+| train | 65 | 22 |
+| tree | 65 | 23 |
+| **Total** | **1.295** | **566** |
+
+Selisih antara kolom manifest dan vector unik berasal dari duplikat: beberapa job mengambil gambar yang sama, dan ingestion melewati gambar dengan SHA-256 yang sudah ada. Jumlah vector dihitung langsung dari collection Milvus, bukan diperkirakan dari jumlah file di MinIO.
+
+Kelas di atas berasal dari kombinasi daftar default aplikasi dan input manual saat pengujian. Daftar default aplikasi berisi 20 kelas yang sama dengan rencana di [docs/rencana-implementasi.md](docs/rencana-implementasi.md):
+
+| Kelas default (20) |
 |---|
 | dog, cat, elephant, bicycle, car, airplane, pizza, chair, tree, flower, building, bridge, boat, train, bird, horse, cake, laptop, guitar, mountain |
 
-Evaluasi retrieval juga belum dijalankan. `evaluation_metadata` hanya boleh dibaca oleh script evaluasi offline setelah ranking vector selesai; tidak ada metrik palsu atau precision@k yang dilaporkan di README ini.
+Lima kelas default (`bicycle`, `airplane`, `cake`, `laptop`, `guitar`) belum di-fetch pada validasi di VPS, sehingga belum memiliki vector di tabel atas. Fetch tetap dapat dijalankan untuk kelas tersebut dari halaman **Fetch Images**.
+
+Evaluasi retrieval menggunakan exact class match terhadap `evaluation_metadata.requestedClass`. Lihat metode dan hasil pada bagian [Evaluasi precision@k](#evaluasi-precisionk).
+
+Semua gambar berasal dari Openverse dengan lisensi terbuka. Creator, nama lisensi, dan source URL ditampilkan pada setiap hasil. Penggunaan dibatasi untuk assignment ini.
+
+## Evaluasi precision@k
+
+Implementasi tersedia di `backend/app/evaluate.py` dan `backend/app/evaluation.py`, dengan test di `backend/tests/test_evaluation.py`.
+
+Metode yang digunakan:
+
+1. Setiap `requestedClass` yang tersimpan menjadi satu query, misalnya `dog`.
+2. Query diubah menjadi text embedding memakai model dan prefix yang sama dengan runtime.
+3. Milvus melakukan top-k COSINE search tanpa membaca `evaluation_metadata`.
+4. Setelah ranking selesai, script membaca `requestedClass` hanya untuk `imageId` yang muncul di hasil.
+5. Hasil dianggap relevan jika normalized class sama persis dengan query. Tidak ada alias seperti `boat = ship`, fuzzy match, title, atau tags.
+6. `precision@k = relevant / k`. Macro precision adalah rata-rata precision seluruh kelas yang dievaluasi.
+
+Evaluasi sengaja memakai snapshot Milvus Lite agar database aktif tetap single-process:
+
+```bash
+cd backend
+# Jalankan copy hanya ketika tidak ada ingestion yang berjalan.
+cp data/milvus.db /tmp/milvus-evaluation.db
+uv run python -m app.evaluate \
+  --db-path /tmp/milvus-evaluation.db \
+  --k 10 \
+  --output ../docs/precision-at-10.json
+```
+
+Gunakan `--classes dog,cat` untuk subset atau `--min-images 20` untuk mengabaikan kelas yang datanya terlalu sedikit.
+
+Hasil aktual pada 566 gambar dan 25 kelas:
+
+| Metrik | Nilai |
+|---|---:|
+| Macro precision@10 | **0,9120** |
+| `boat` | 0,6000 |
+| `mountain` | 0,7000 |
+| `beach`, `sea` | 0,8000 |
+| `ship`, `sunset` | 0,9000 |
+| `red apple` | 0,1000, hanya 1 gambar |
+
+Report lengkap tersimpan di [docs/precision-at-10.json](docs/precision-at-10.json). Angka ini **bukan anotasi visual manual**. Label kelas Openverse adalah ground truth lemah, kelas visual dapat tumpang tindih, dan kelas dengan sedikit gambar menghasilkan skor yang tidak stabil. Karena itu hasil ini adalah indikator awal, bukan klaim kualitas model yang universal.
+
+## Contoh query dan screenshot
+
+Dua contoh diambil dari aplikasi yang berjalan (`https://image-search.muhamad-wahid.my.id`), dengan `topK = 12`.
+
+**Query satu kata: `dog`**
+
+![Hasil pencarian untuk query dog](docs/screenshots/search-dog.png)
+
+**Query bahasa alami: `a dog playing in the snow`**
+
+![Hasil pencarian untuk query a dog playing in the snow](docs/screenshots/search-natural-language.png)
+
+Query kedua menunjukkan hasil yang relevan secara visual (anjing di salju) tanpa pencocokan kata kunci terhadap title atau tags Openverse. Screenshot ini adalah bukti hasil yang benar-benar dijalankan, bukan mockup.
 
 ## Known limitations
 
@@ -348,17 +487,9 @@ Evaluasi retrieval juga belum dijalankan. `evaluation_metadata` hanya boleh diba
 - Model multimodal membutuhkan llama.cpp build yang tepat. Smoke test wajib dijalankan setelah mengganti image/tag.
 - Batas image token 280 mengikuti model card; jika build llama.cpp tidak menghormatinya, gambar besar dapat melebihi context dan gagal. Backend membatasi dimensi embedding lewat `INGEST_EMBEDDING_MAX_DIMENSION`, tetapi object asli di MinIO tetap utuh. VM 2 GB tetap ketat dan OOM mungkin terjadi pada gambar besar atau concurrency tinggi.
 - Image MinIO memakai mirror legacy; lihat bagian MinIO image.
-- Belum ada evaluasi retrieval, screenshot, atau hasil benchmark di repository ini.
+- Evaluasi memakai weak labels dari `requestedClass`, bukan anotasi visual manual. Kelas yang mirip dan data sedikit dapat menurunkan `precision@k` tanpa membuktikan model gagal.
 - Containerfile mengasumsikan struktur yang didokumentasikan: `fetcher/pom.xml` + `fetcher/src`, `backend/app/main.py` + `backend/pyproject.toml`, `frontend/app.py` + `frontend/image_search/`. Penyesuaian diperlukan jika implementasi memakai layout lain.
 - Tidak ada authentication atau TLS di stack ini. Jangan mengekspos port ke VPS/internet; gunakan reverse proxy yang menyediakan authentication dan TLS jika akses remote benar-benar diperlukan. `PUBLIC_API_BASE_URL` remote hanya boleh dipakai setelah kontrol tersebut tersedia. Frontend juga harus benar-benar membaca `PUBLIC_API_BASE_URL`.
-
-## Pekerjaan lanjutan
-
-- Evaluasi retrieval offline (mis. precision@k per kelas) memakai `evaluation_metadata` setelah ranking selesai, dengan laporan keterbatasan ground truth Openverse.
-- Menambahkan healthcheck/retry yang eksplisit di Java dan Python untuk startup yang lebih deterministik.
-- Menyempurnakan kualitas resize dan strategi kompresi untuk embedding tanpa mengubah object asli di MinIO.
-- Menyediakan opsi image MinIO resmi dan dokumentasi registry untuk lingkungan yang punya akses.
-- Menambahkan integration test dengan Openverse mock dan dataset kecil yang deterministik.
 
 ## Troubleshooting
 

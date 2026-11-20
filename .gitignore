@@ -1,9 +1,11 @@
 Take-Home Assignment — ML Engineer (Bank MAS).pdf
+*/screenshots
 
 # Local secrets and environment
 .env
 .env.*
 !.env.example
+!deploy/.env.vps.example
 
 # Downloaded models (large, licensed separately)
 /models/

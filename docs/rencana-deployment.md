@@ -2,7 +2,7 @@
 
 ## 1. Status dokumen
 
-Dokumen ini adalah **rencana, belum eksekusi deployment**. Penyusunannya didasarkan pada inspeksi read-only terhadap project dan VPS.
+Dokumen ini awalnya disusun sebagai rencana berdasarkan inspeksi read-only. Deployment kemudian dilaksanakan pada commit `1984cb1` dan subdomain `image-search.muhamad-wahid.my.id` sudah aktif. Catatan hasil implementasi dan keputusan akses publik telah dimasukkan ke dokumen ini.
 
 Prinsip utama:
 
@@ -75,8 +75,12 @@ flowchart LR
 
 Gunakan dua network:
 
-- `app-net`: network internal untuk `gateway`, `frontend`, `backend`, `fetcher`, dan `llama-embeddings`.
+- `app-net`: external network `bank-mas-image-search-net` untuk `gateway`, `frontend`, `backend`, `fetcher`, dan `llama-embeddings`. Network ini dibuat satu kali dengan subnet `10.89.88.0/24` agar stabil saat container di-recreate.
 - `minio_minio-network`: network MinIO yang sudah ada dan didaftarkan sebagai `external: true`.
+
+```bash
+podman network create --driver bridge --subnet 10.89.88.0/24 bank-mas-image-search-net
+```
 
 Hanya `backend` dan `fetcher` yang perlu terhubung ke `minio_minio-network`. Frontend, gateway, dan llama.cpp tidak memerlukan akses langsung ke MinIO.
 
@@ -215,7 +219,14 @@ Jangan memakai variabel `MINIO_ROOT_USER` atau `MINIO_ROOT_PASSWORD` pada compos
 | fetcher | 8081 | Tidak dipublish | Hanya backend melalui `app-net` |
 | gateway | 80 | `127.0.0.1:18080` | Cloudflare Tunnel, saat fase publik |
 
-Tidak ada penambahan rule UFW untuk port aplikasi karena semuanya tetap berada di loopback atau network internal.
+Tidak ada port aplikasi yang dibuka ke internet melalui UFW. Saat implementasi, DNS Podman dari container ternyata terblokir UFW. Karena itu ditambahkan rule DNS internal berikut agar service-name dan alias MinIO dapat di-resolve:
+
+```bash
+ufw allow from 10.89.88.0/24 to any port 53 comment "bank-mas-image-search internal DNS"
+ufw allow from 172.25.0.0/16 to any port 53 comment "bank-mas-image-search MinIO network DNS"
+```
+
+Rule ini hanya mengizinkan DNS dari network container privat. Port `8000`, `8501`, `18080`, dan `18081` tetap terikat ke `127.0.0.1`.
 
 ## 7. Tahapan deployment
 
@@ -305,13 +316,12 @@ Frontend akan tersedia di:
 https://image-search.muhamad-wahid.my.id
 ```
 
-Aplikasi tidak memiliki authentication dan authorization sendiri. Cloudflare Access wajib aktif sebelum hostname dibuka untuk penggunaan publik.
+Aplikasi tidak memiliki authentication dan authorization sendiri. **Pada deployment ini pengguna memilih membuka subdomain tanpa Cloudflare Access.** Akibatnya, siapa pun yang mengetahui domain dapat memakai fetch, search, embedding, dan resource VPS. Access tetap disarankan sebagai hardening lanjutan.
 
 ### 8.1 Target koneksi
 
 ```text
 Browser
-  -> Cloudflare Access
   -> Cloudflare Tunnel yang sudah ada
   -> http://127.0.0.1:18080
   -> gateway container
@@ -345,7 +355,7 @@ Caddy meneruskan WebSocket yang dibutuhkan Streamlit. Path `/api/v1` tidak di-st
 
 ### 8.3 Ingress Cloudflare Tunnel
 
-Tambahkan entri berikut ke `/root/.cloudflared/config.yml` pada tunnel yang sudah ada:
+Tambahkan entri berikut ke `/etc/cloudflared/config.yml`, yaitu file yang digunakan `cloudflared.service` di VPS:
 
 ```yaml
 ingress:
@@ -362,8 +372,8 @@ Potongan di atas menjelaskan perubahan yang dibutuhkan, bukan pengganti seluruh 
 Sebelum perubahan, backup file konfigurasi. Setelah perubahan, validasi dengan:
 
 ```bash
-cloudflared tunnel ingress validate
-cloudflared tunnel ingress rule https://image-search.muhamad-wahid.my.id
+cloudflared --config /etc/cloudflared/config.yml tunnel ingress validate
+cloudflared --config /etc/cloudflared/config.yml tunnel ingress rule https://image-search.muhamad-wahid.my.id
 ```
 
 Hasil rule harus memilih service `http://127.0.0.1:18080`, bukan ingress lama di `localhost:8080` dan bukan `http_status:404`.
@@ -399,9 +409,9 @@ Jika membuat DNS manual, gunakan:
 
 Jangan membuat DNS atau public hostname ganda pada tunnel berbeda.
 
-### 8.5 Cloudflare Access
+### 8.5 Cloudflare Access (hardening opsional)
 
-Buat **Self-hosted Access Application** sebelum membuka aplikasi ke pengguna:
+Access tidak diaktifkan pada deployment ini berdasarkan keputusan pengguna. Untuk menambahkan login di kemudian hari, buat **Self-hosted Access Application**:
 
 | Field | Nilai |
 |---|---|
@@ -436,8 +446,8 @@ Restart hanya container frontend setelah mengubah environment tersebut.
 1. Pastikan gateway merespons dari VPS melalui `127.0.0.1:18080`.
 2. Pastikan ingress rule memilih gateway yang benar.
 3. Buka `https://image-search.muhamad-wahid.my.id` dari browser.
-4. Pastikan pengguna yang tidak diizinkan tidak dapat melewati Cloudflare Access.
-5. Login melalui Cloudflare Access dan pastikan halaman Streamlit termuat.
+4. Pastikan konsekuensi akses publik tanpa login telah disetujui.
+5. Pastikan halaman Streamlit termuat.
 6. Pastikan WebSocket Streamlit tidak menimbulkan error berulang.
 7. Jalankan fetch dan search kecil.
 8. Pastikan gambar hasil search termuat dari hostname yang sama, bukan `127.0.0.1`, IP VPS, atau hostname MinIO.
@@ -530,7 +540,7 @@ Runtime status Java dan queue Python dapat hilang saat restart. Manifest dan ing
 - [ ] Backup dan rollback sudah disiapkan.
 - [ ] Public hostname `image-search.muhamad-wahid.my.id` mengarah ke `http://127.0.0.1:18080`.
 - [ ] Ingress lama dan catch-all Cloudflare Tunnel tetap utuh.
-- [ ] Cloudflare Access aktif untuk seluruh path pada hostname tersebut sebelum akses publik dibuka.
+- [ ] Keputusan akses publik tanpa Cloudflare Access telah disetujui, atau Access sudah diaktifkan untuk seluruh path.
 - [ ] Frontend dan gambar hasil search berhasil dibuka melalui hostname tersebut.
 - [ ] Tidak ada perubahan pada container atau konfigurasi service lain tanpa persetujuan.
 

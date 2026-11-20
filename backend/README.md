@@ -90,7 +90,7 @@ local-development values; credentials have **no defaults**.
 | `MINIO_ENDPOINT` | `localhost:9000` | MinIO/S3 endpoint (no scheme) |
 | `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | unset | Credentials — never commit |
 | `MINIO_SECURE` | `false` | TLS for MinIO |
-| `MINIO_BUCKET` | `bank-mas` | Application bucket |
+| `MINIO_BUCKET` | `bank-mas-image-search` | Application bucket |
 | `MINIO_ENSURE_BUCKET` | `true` | Create bucket at startup if missing |
 | `MINIO_POOL_MAXSIZE` | `32` | urllib3 connection pool size for MinIO (blocking, for concurrent image reads) |
 | `IMAGE_PREFIX` | `images/bank-mas/` | Required image object prefix |

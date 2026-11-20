@@ -1,0 +1,240 @@
+{
+  "metric": "precision@10",
+  "method": "exact normalized requestedClass match after vector ranking",
+  "groundTruth": "evaluation_metadata.requestedClass (weak labels)",
+  "ranking": "EmbeddingGemma 2 text embedding + L2 normalization + Milvus COSINE",
+  "collection": "image_embeddings",
+  "model": "embeddinggemma-2",
+  "k": 10,
+  "totalIndexedImages": 566,
+  "unlabeledImages": 0,
+  "classesEvaluated": 25,
+  "macroPrecision": 0.912,
+  "results": [
+    {
+      "query": "beach",
+      "expectedClass": "beach",
+      "indexedImages": 27,
+      "k": 10,
+      "hits": 10,
+      "relevant": 8,
+      "precision": 0.8
+    },
+    {
+      "query": "bird",
+      "expectedClass": "bird",
+      "indexedImages": 22,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "boat",
+      "expectedClass": "boat",
+      "indexedImages": 22,
+      "k": 10,
+      "hits": 10,
+      "relevant": 6,
+      "precision": 0.6
+    },
+    {
+      "query": "bridge",
+      "expectedClass": "bridge",
+      "indexedImages": 22,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "building",
+      "expectedClass": "building",
+      "indexedImages": 22,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "car",
+      "expectedClass": "car",
+      "indexedImages": 22,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "cat",
+      "expectedClass": "cat",
+      "indexedImages": 22,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "chair",
+      "expectedClass": "chair",
+      "indexedImages": 22,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "dog",
+      "expectedClass": "dog",
+      "indexedImages": 22,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "elephant",
+      "expectedClass": "elephant",
+      "indexedImages": 23,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "fish",
+      "expectedClass": "fish",
+      "indexedImages": 26,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "flower",
+      "expectedClass": "flower",
+      "indexedImages": 22,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "goat",
+      "expectedClass": "goat",
+      "indexedImages": 22,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "horse",
+      "expectedClass": "horse",
+      "indexedImages": 23,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "mountain",
+      "expectedClass": "mountain",
+      "indexedImages": 22,
+      "k": 10,
+      "hits": 10,
+      "relevant": 7,
+      "precision": 0.7
+    },
+    {
+      "query": "pie",
+      "expectedClass": "pie",
+      "indexedImages": 22,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "pizza",
+      "expectedClass": "pizza",
+      "indexedImages": 22,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "rain",
+      "expectedClass": "rain",
+      "indexedImages": 27,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "red apple",
+      "expectedClass": "red apple",
+      "indexedImages": 1,
+      "k": 10,
+      "hits": 10,
+      "relevant": 1,
+      "precision": 0.1
+    },
+    {
+      "query": "sail",
+      "expectedClass": "sail",
+      "indexedImages": 27,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "sea",
+      "expectedClass": "sea",
+      "indexedImages": 27,
+      "k": 10,
+      "hits": 10,
+      "relevant": 8,
+      "precision": 0.8
+    },
+    {
+      "query": "ship",
+      "expectedClass": "ship",
+      "indexedImages": 27,
+      "k": 10,
+      "hits": 10,
+      "relevant": 9,
+      "precision": 0.9
+    },
+    {
+      "query": "sunset",
+      "expectedClass": "sunset",
+      "indexedImages": 27,
+      "k": 10,
+      "hits": 10,
+      "relevant": 9,
+      "precision": 0.9
+    },
+    {
+      "query": "train",
+      "expectedClass": "train",
+      "indexedImages": 22,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    },
+    {
+      "query": "tree",
+      "expectedClass": "tree",
+      "indexedImages": 23,
+      "k": 10,
+      "hits": 10,
+      "relevant": 10,
+      "precision": 1.0
+    }
+  ]
+}

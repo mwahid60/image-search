@@ -16,9 +16,9 @@ DEFAULT_CLASSES: tuple[str, ...] = (
     "dog",
     "cat",
     "elephant",
-    "goat",
+    "bicycle",
     "car",
-    "pie",
+    "airplane",
     "pizza",
     "chair",
     "tree",
@@ -29,6 +29,9 @@ DEFAULT_CLASSES: tuple[str, ...] = (
     "train",
     "bird",
     "horse",
+    "cake",
+    "laptop",
+    "guitar",
     "mountain",
 )
 

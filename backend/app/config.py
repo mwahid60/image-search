@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     minio_secret_key: str | None = None
     minio_secure: bool = False
     minio_region: str | None = None
-    minio_bucket: str = "bank-mas"
+    minio_bucket: str = "bank-mas-image-search"
     minio_ensure_bucket: bool = True
     minio_timeout_seconds: float = Field(default=5.0, gt=0)
     minio_max_retries: int = Field(default=2, ge=0, le=10)
